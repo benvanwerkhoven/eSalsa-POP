@@ -7,10 +7,12 @@
 #  modules.
 #
 #-----------------------------------------------------------------------
-F77 = mpif77
-F90 = mpif90
-LD = mpif90
-CC = cc
+
+
+F77 = $(MPIFC)
+F90 = $(MPIFC)
+LD = $(MPIFC)
+CC = $(MPIFC)
 Cp = /bin/cp
 Cpp = cpp -P
 AWK = /usr/bin/awk
@@ -23,12 +25,6 @@ MPI = yes
 
 # Adjust these to point to where netcdf is installed
 
-# These have been loaded as a module so no values necessary
-#NETCDFINC = -I/var/scratch/jason/netcdf/netcdf-3.6.3-bin/include
-#NETCDFLIB = -L/var/scratch/jason/netcdf/netcdf-3.6.3-bin/lib
-
-NETCDFINC = -I/cm/shared/apps/netcdf/gcc/64/4.1.1/include
-NETCDFLIB = -L/cm/shared/apps/netcdf/gcc/64/4.1.1/lib
 
 #  Enable trapping and traceback of floating point exceptions, yes/no.
 #  Note - Requires 'setenv TRAP_FPE "ALL=ABORT,TRACE"' for traceback.
@@ -40,12 +36,11 @@ TRAP_FPE = no
 #------------------------------------------------------------------
 
 #DCOUPL              = -Dcoupled
-DHIRES                =-D_HIRES
 
 Cpp_opts =   \
-      $(DCOUPL) $(DHIRES)
+      $(DCOUPL)
 
-Cpp_opts := $(Cpp_opts) -DPOSIX 
+Cpp_opts := $(Cpp_opts) -DPOSIX -DAMUSE
  
 #----------------------------------------------------------------------------
 #
@@ -56,10 +51,12 @@ Cpp_opts := $(Cpp_opts) -DPOSIX
 CFLAGS = $(ABI) 
 
 ifeq ($(OPTIMIZE),yes)
-  CFLAGS := $(CFLAGS) -O3 
+  CFLAGS := $(CFLAGS) -O2
 else
   CFLAGS := $(CFLAGS) -g -check all -ftrapuv
 endif
+
+CFLAGS := $(CFLAGS) 
  
 #----------------------------------------------------------------------------
 #
@@ -67,19 +64,25 @@ endif
 #
 #----------------------------------------------------------------------------
 
-FBASE = $(ABI) $(NETCDFINC) $(MPI_COMPILE_FLAGS) -I$(DepDir) 
+FBASE := $(ABI) $(NETCDFINC) $(MPI_COMPILE_FLAGS) -I$(DepDir) 
 MODSUF = mod
 
 ifeq ($(TRAP_FPE),yes)
   FBASE := $(FBASE) 
 endif
 
+FFLAGS := $(POPFFLAGS) $(FBASE)
+
 ifeq ($(OPTIMIZE),yes)
-  FFLAGS = $(FBASE) -O3 -fconvert=swap
+  FFLAGS := $(FFLAGS) -O2 
 else
-  FFLAGS = $(FBASE) -g -check bounds -fconvert=swap
+  FFLAGS := $(FFLAGS) -g -check bounds
 endif
- 
+
+
+
+
+
 #----------------------------------------------------------------------------
 #
 #                           Loader Flags and Libraries
@@ -87,11 +90,13 @@ endif
 #----------------------------------------------------------------------------
  
 LDFLAGS = $(ABI) 
+
+LDFLAGS := $(LDFLAGS) $(NETCDFINC)
  
-LIBS = $(NETCDFLIB) -lnetcdf -lcurl
+LIBS = $(NETCDFLIB) -lnetcdf -lnetcdff
  
 ifeq ($(MPI),yes)
-  LIBS := $(LIBS) $(MPI_LD_FLAGS) -lmpi 
+#assuming the compiler wrapper takes care of this
 endif
 
 ifeq ($(TRAP_FPE),yes)
