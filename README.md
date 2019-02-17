@@ -1,6 +1,11 @@
 eSalsa-POP
 ==========
 
-eSalsa project version of The Parallel Ocean Program
+Fork of the Parallel Ocean Program (POP) created during the eSalsa project at the Netherlands eScience center.
 
-This repository is now considered an archived version. Development of eSalsa-POP has continued at https://github.com/nlesc-smcm/eSalsa-POP
+Extensions to the original POP include GPU acceleration and an interface for coupling using the OMUSE framework.
+
+
+
+
+
