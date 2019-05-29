@@ -41,6 +41,7 @@
 ! !PUBLIC MEMBER FUNCTIONS:
 
    public  :: read_horiz_grid, &
+              horiz_grid_internal, &
               read_grid_namelist, &
               init_grid1,     &
               init_grid2,     &
