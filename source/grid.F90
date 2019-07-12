@@ -372,6 +372,9 @@ subroutine init_grid1
 !-----------------------------------------------------------------------
 
    select case (topography_opt)
+   case ('amuse')
+      ! do nothing
+      continue 
    case ('internal')
       call topography_internal(.true.)
       flat_bottom = .true.
@@ -666,6 +669,10 @@ subroutine init_grid1
    end select
 
    select case (vert_grid_opt)
+   case ('amuse')
+      if (my_task == master_task) then
+         write(stdout,'(a34)') ' using input vertical grid'
+      endif
    case ('internal')
       if (my_task == master_task) then
          write(stdout,'(a34)') ' Creating vertical grid internally'
@@ -723,6 +730,10 @@ subroutine init_grid1
 !-----------------------------------------------------------------------
 
    select case (topography_opt)
+   case ('amuse')
+      if (my_task == master_task) write(stdout,'(a33)') &
+         ' Using input topography '
+      call topography_internal(.false.) ! this does exactly what we want...
    case ('internal')
       if (my_task == master_task) write(stdout,'(a33)') &
          ' Generating topography internally'
