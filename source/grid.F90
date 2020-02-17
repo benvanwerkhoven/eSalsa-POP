@@ -1544,7 +1544,7 @@ subroutine init_grid1
 !-----------------------------------------------------------------------
 
    real (POP_r8), parameter :: &
-      zmax    = 4000.0_POP_r8,  &! max depth in meters
+      zmax    = 5000.0_POP_r8,  &! max depth in meters
       dz_sfc  =   25.0_POP_r8,  &! thickness of sfc layer (meters)
       dz_deep =  400.0_POP_r8    ! thick of deep ocn layers (meters)
 

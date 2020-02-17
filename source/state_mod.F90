@@ -231,7 +231,7 @@
       T_leos_ref = 19.0_r8,       &! reference T for linear eos (deg C)
       S_leos_ref = 0.035_r8,      &! reference S for linear eos (msu)
       rho_leos_ref = 1.025022_r8, &! ref dens (g/cm3) at ref T,S and 0 bar
-      alf = 2.55e-4_r8,           &! expansion coeff -(drho/dT) (gr/cm^3/K)
+      alf = 1e-4_r8,           &! 2.55 e-4r8 expansion coeff -(drho/dT) (gr/cm^3/K)
       bet = 7.64e-1_r8             ! expansion coeff (drho/dS) (gr/cm^3/msu)
 
 !EOC
