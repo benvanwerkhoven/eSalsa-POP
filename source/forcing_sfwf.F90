@@ -550,9 +550,34 @@ end subroutine read_sfwf_namelist
 
       select case (sfwf_formulation)
       case ('restoring')
-         SFWF_DATA(:,:,:,sfwf_data_sss,1) = 0.035_r8
+         SFWF_DATA(:,:,:,sfwf_data_sss,1) = 0.035_r8 
       end select
+      sfwf_data_next = never
+      sfwf_data_update = never
+      sfwf_interp_freq = 'never'
 
+!-----------------------------------------------------------------------
+!
+!  salinity surface flux for benchmark, Bernsen, 2010
+!  therefore no new values will be needed.
+!
+!-----------------------------------------------------------------------
+
+   case ('amuse')
+
+      allocate(SFWF_DATA(nx_block,ny_block,max_blocks_clinic, &
+                         sfwf_data_num_fields,1))
+      SFWF_DATA = c0
+      
+      !$OMP PARALLEL DO PRIVATE(iblock)
+      do iblock=1,nblocks_clinic
+         select case (sfwf_formulation)
+         case ('restoring')
+            SFWF_DATA(:,:,iblock,sfwf_data_sss,1) = 0.034_r8 + &
+                0.002_r8*sin(ULAT(:,:,iblock)) 
+         end select
+      end do
+      !$OMP END PARALLEL DO
       sfwf_data_next = never
       sfwf_data_update = never
       sfwf_interp_freq = 'never'
@@ -1171,6 +1196,25 @@ end subroutine read_sfwf_namelist
          !$OMP END PARALLEL DO
 
       end select
+
+   case ('amuse')
+
+      select case (sfwf_formulation)
+      case ('restoring')
+         !$OMP PARALLEL DO PRIVATE(iblock, this_block)
+         do iblock=1,nblocks_clinic
+            this_block = get_block(blocks_clinic(iblock),iblock)
+
+            STF(:,:,2,iblock) = &
+                              (SFWF_DATA(:,:,iblock,sfwf_data_sss,1) - &
+                               TRACER(:,:,1,2,curtime,iblock))*        &
+                              sfwf_restore_rtau*dz(1)
+         end do
+         !$OMP END PARALLEL DO
+
+      end select
+
+
 
    case('annual')
 

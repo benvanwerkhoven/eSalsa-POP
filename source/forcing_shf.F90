@@ -119,7 +119,7 @@
       T_weak_restore_limit   = -0.8_r8, &
       dT_restore_limit = T_weak_restore_limit - T_strong_restore_limit
 
-   real (r8) ::          &
+   real (r8), public ::          &
       shf_data_inc,      &! time increment between values of forcing data
       shf_data_next,     &! time that will be used for the next value of forcing data that is needed
       shf_data_update,   &! time when the a new forcing value needs to be added to interpolation set
@@ -660,7 +660,6 @@ end subroutine read_shf_namelist
 !-----------------------------------------------------------------------
 
    case ('analytic')
-
       allocate( SHF_DATA(nx_block,ny_block,max_blocks_clinic, &
                          shf_data_num_fields,1))
 
@@ -669,7 +668,32 @@ end subroutine read_shf_namelist
          select case (shf_formulation)
          case ('restoring')
             SHF_DATA(:,:,iblock,shf_data_sst,1) = &
-                28.0_r8*(c1 - sin(ULAT(:,:,iblock)))
+               28.0_r8*(c1 - sin(ULAT(:,:,iblock)))
+
+         end select
+      end do ! block loop
+      !$OMP END PARALLEL DO
+
+      shf_data_next = never
+      shf_data_update = never
+      shf_interp_freq = 'never'
+   
+!-----------------------------------------------------------------------
+!
+!  heat flux for benchmark, Bernsen, 2010
+!  dT = 25 C, T0 - no clear info in the benchmark paper
+!  T_surface=T0 + dT/2 * cos(pi * y / Ly), y-coordinate in N direction
+!-----------------------------------------------------------------------
+   case ('amuse')
+      allocate( SHF_DATA(nx_block,ny_block,max_blocks_clinic, &
+                         shf_data_num_fields,1))
+
+      !$OMP PARALLEL DO PRIVATE(iblock)
+      do iblock=1,nblocks_clinic
+         select case (shf_formulation)
+         case ('restoring')
+            SHF_DATA(:,:,iblock,shf_data_sst,1) = &
+               25.0_r8*(c1 - sin(ULAT(:,:,iblock))) 
 
          end select
       end do ! block loop
@@ -1627,7 +1651,22 @@ end subroutine read_shf_namelist
          do iblock=1,nblocks_clinic
             STF(:,:,1,iblock) = (SHF_DATA(:,:,iblock,shf_data_sst,1) - &
                                  TRACER(:,:,1,1,curtime,iblock))*      &
-                                shf_restore_rtau*dz(1)
+                                 shf_restore_rtau*dz(1)
+         end do
+         !$OMP END PARALLEL DO
+
+      end select
+
+   case ('amuse')
+
+      select case (shf_formulation)
+      case ('restoring')
+
+         !$OMP PARALLEL DO PRIVATE(iblock)
+         do iblock=1,nblocks_clinic
+            STF(:,:,1,iblock) = (SHF_DATA(:,:,iblock,shf_data_sst,1) - &
+                                 TRACER(:,:,1,1,curtime,iblock))*      &
+                                 shf_restore_rtau*dz(1)
          end do
          !$OMP END PARALLEL DO
 

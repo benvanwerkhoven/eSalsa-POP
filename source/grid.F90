@@ -42,6 +42,7 @@
 
    public  :: read_horiz_grid, &
               horiz_grid_internal, &
+              horiz_grid_amuse, &
               read_grid_namelist, &
               init_grid1,     &
               init_grid2,     &
@@ -355,6 +356,8 @@ subroutine init_grid1
 !-----------------------------------------------------------------------
 
    select case (horiz_grid_opt)
+   case ('amuse')
+      call horiz_grid_amuse(.true.)
    case ('internal')
       call horiz_grid_internal(.true.)
    case ('file')
@@ -467,6 +470,11 @@ subroutine init_grid1
 !-----------------------------------------------------------------------
 
    select case (horiz_grid_opt)
+   case ('amuse')
+      if (my_task == master_task) then
+         write(stdout,'(a36)') ' Creating horizontal grid from amuse interfacey'
+      endif
+      call horiz_grid_amuse(.false.)
    case ('internal')
       if (my_task == master_task) then
          write(stdout,'(a36)') ' Creating horizontal grid internally'
@@ -1027,6 +1035,133 @@ subroutine init_grid1
 
 !***********************************************************************
 !BOP
+! !IROUTINE: horiz_grid_amuse
+! !INTERFACE:
+
+ subroutine horiz_grid_amuse(latlon_only)
+
+! !DESCRIPTION:
+!  Creates a lat/lon grid with equal spacing in each direction
+!
+! !REVISION HISTORY:
+!  same as module
+
+! !INPUT PARAMETERS:
+
+   logical (POP_logical), intent(in) :: &
+      latlon_only       ! flag requesting only ULAT, ULON
+
+!EOP
+!BOC
+!-----------------------------------------------------------------------
+!
+!  local variables
+!
+!-----------------------------------------------------------------------
+
+   integer (POP_i4) :: &
+      i,j,ig,jg,jm1,n    ! dummy counters
+
+   real (POP_r8) :: &
+      dlat, dlon,       &! lat/lon spacing for idealized grid
+      lathalf,          &! lat at T points
+      xdeg               ! temporary longitude variable
+
+   type (block) :: &
+      this_block    ! block info for this block
+
+!-----------------------------------------------------------------------
+!
+!  calculate lat/lon coords of U points
+!  long range (-180,180)
+!
+!-----------------------------------------------------------------------
+
+   dlon = 60.0_POP_r8/real(nx_global)
+   dlat = 60.0_POP_r8/real(ny_global)
+!if we do not allocate ulat... then set it from interface
+   if (latlon_only) then
+
+      allocate (ULAT_G(nx_global, ny_global), &
+                ULON_G(nx_global, ny_global))
+
+      do i=1,nx_global
+        xdeg = 10.0_POP_r8 + i*dlon
+        if (xdeg > 180.0_POP_r8) xdeg = xdeg - 360.0_POP_r8
+        ULON_G(i,:) = xdeg/radian
+      enddo
+
+      do j = 1,ny_global
+         ULAT_G(:,j)  = (10.0_POP_r8 + j*dlat)/radian
+      enddo
+
+!-----------------------------------------------------------------------
+!
+!  calculate grid spacings and other quantities
+!  compute here to avoid bad ghost cell values due to dropped land 
+!  blocks
+!
+!-----------------------------------------------------------------------
+
+   else ! not latlon_only
+
+      !$OMP PARALLEL DO PRIVATE(n, this_block, i, j, ig, jg, lathalf)
+      do n=1,nblocks_clinic
+
+         this_block = get_block(blocks_clinic(n),n)
+
+         do j=1,ny_block
+            jg = this_block%j_glob(j)
+            jm1 = jg - 1
+            if (jm1 < 1) jm1 = ny_global
+
+            do i=1,nx_block
+               !***
+               !*** calculate grid lengths
+               !***
+               ! check definition of quantities
+               HTN(i,j,n) = dlon*radius/radian  ! convert to cm
+               HTE(i,j,n) = dlat*radius/radian  ! convert to cm
+               HUS(i,j,n) = dlon*radius/radian  ! convert to cm
+               HUW(i,j,n) = dlat*radius/radian  ! convert to cm
+               DYT(i,j,n) = dlat*radius/radian  ! convert to cm
+               DYU(i,j,n) = dlat*radius/radian  ! convert to cm
+               ANGLE(i,j,n) = c0
+
+               ig = this_block%i_glob(i)
+               if (ig > 0 .and. jg > 0) then
+                  ULON(i,j,n) = ULON_G(ig,jg)
+                  ULAT(i,j,n) = ULAT_G(ig,jg)
+                  HTN (i,j,n) = HTN(i,j,n)*cos(ULAT(i,j,n))
+                  DXU (i,j,n) = HTN(i,j,n)
+                  lathalf = (10.0_POP_r8 + (jg-p5)*dlat)/radian
+                  HUS (i,j,n) = HUS(i,j,n)*cos(lathalf)
+                  DXT (i,j,n) = dlon*radius/radian*       &
+                                p5*(cos(ULAT_G(ig,jg )) + &
+                                    cos(ULAT_G(ig,jm1)))
+               else
+                  ULON(i,j,n) = c0
+                  ULAT(i,j,n) = c0
+                  HTN (i,j,n) = c1 ! to prevent divide by zero
+                  HUS (i,j,n) = c1 ! to prevent divide by zero
+                  DXU (i,j,n) = c1 ! fixed up later
+               endif
+            end do
+         enddo
+      enddo
+      !$OMP END PARALLEL DO
+
+      deallocate(ULAT_G,ULON_G)
+
+   endif
+
+!-----------------------------------------------------------------------
+!EOC
+
+ end subroutine horiz_grid_amuse
+
+!***********************************************************************
+!BOP
 ! !IROUTINE: horiz_grid_internal
 ! !INTERFACE:
 
@@ -1409,7 +1544,7 @@ subroutine init_grid1
 !-----------------------------------------------------------------------
 
    real (POP_r8), parameter :: &
-      zmax    = 5500.0_POP_r8,  &! max depth in meters
+      zmax    = 5000.0_POP_r8,  &! max depth in meters
       dz_sfc  =   25.0_POP_r8,  &! thickness of sfc layer (meters)
       dz_deep =  400.0_POP_r8    ! thick of deep ocn layers (meters)
 
