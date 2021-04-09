@@ -1261,7 +1261,7 @@ subroutine init_grid1
                   ULAT(i,j,n) = ULAT_G(ig,jg)
                   HTN (i,j,n) = HTN(i,j,n)*cos(ULAT(i,j,n))
                   DXU (i,j,n) = HTN(i,j,n)
-                  lathalf = (10.0_POP_r8 + (jg-p5)*dlat)/radian
+                  lathalf = (-90.0_POP_r8 + (jg-p5)*dlat)/radian
                   HUS (i,j,n) = HUS(i,j,n)*cos(lathalf)
                   DXT (i,j,n) = dlon*radius/radian*       &
                                 p5*(cos(ULAT_G(ig,jg )) + &
