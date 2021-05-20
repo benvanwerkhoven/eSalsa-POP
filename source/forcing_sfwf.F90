@@ -574,7 +574,7 @@ end subroutine read_sfwf_namelist
          select case (sfwf_formulation)
          case ('restoring')
             SFWF_DATA(:,:,iblock,sfwf_data_sss,1) = 0.034_r8 + &
-                0.002_r8*sin(ULAT(:,:,iblock)) 
+                0.002_r8*cos(ULAT(:,:,iblock)) 
          end select
       end do
       !$OMP END PARALLEL DO
