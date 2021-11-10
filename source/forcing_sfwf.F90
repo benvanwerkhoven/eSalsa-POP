@@ -91,7 +91,7 @@
 !
 !-----------------------------------------------------------------------
 
-   real (r8), allocatable, dimension(:,:,:,:,:) :: &
+   real (r8), allocatable, dimension(:,:,:,:,:), public :: &
       SFWF_DATA    ! forcing data used to get SFWF
 
    real (r8), dimension(12) :: &
@@ -130,7 +130,7 @@
 
    !*** integer addresses for various forcing data fields
 
-   integer (int_kind) :: & ! restoring and partially-coupled options
+   integer (int_kind), public :: & ! restoring and partially-coupled options
       sfwf_data_sss
 
    integer (int_kind), public :: &! bulk-NCEP and partially-coupled (some) options

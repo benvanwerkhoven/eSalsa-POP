@@ -105,7 +105,7 @@
 !
 !-----------------------------------------------------------------------
 
-   real (r8), allocatable, dimension(:,:,:,:,:) :: &
+   real (r8), allocatable, dimension(:,:,:,:,:), public :: &
       SHF_DATA        ! forcing data to use for computing SHF
 
    real (r8), dimension(12) :: &
@@ -147,7 +147,7 @@
       shf_bndy_type           !    cell updates
 
 !  the following is necessary for sst restoring and partially-coupled
-   integer (int_kind) :: &
+   integer (int_kind),public :: &
       shf_data_sst
 
 !  the following are necessary for Barnier-restoring
