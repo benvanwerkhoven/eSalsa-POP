@@ -1077,8 +1077,8 @@ subroutine init_grid1
       if(.NOT.allocated(ULAT_G).OR.(.NOT.allocated(ULON_G))) &
           call exit_POP(sigAbort,'ERROR: horiz_grid_option amuse broken')
 
-      dlon=ULON_G(2,1)-ULON_G(1,1)
-      dlat=ULAT_G(1,2)-ULAT_G(1,1)
+      dlon=(ULON_G(2,1)-ULON_G(1,1))*radian
+      dlat=(ULAT_G(1,2)-ULAT_G(1,1))*radian
 
       if(dlon.LE.0.OR.dlat.LE.0) &
           call exit_POP(sigAbort,'ERROR: horiz_grid_option amuse dlon or dlat <=0')
@@ -1098,8 +1098,8 @@ subroutine init_grid1
       if(.NOT.allocated(ULAT_G).OR.(.NOT.allocated(ULON_G))) &
           call exit_POP(sigAbort,'ERROR: horiz_grid_option amuse broken 2')
 
-      dlon=ULON_G(2,1)-ULON_G(1,1)
-      dlat=ULAT_G(1,2)-ULAT_G(1,1)
+      dlon=(ULON_G(2,1)-ULON_G(1,1))*radian
+      dlat=(ULAT_G(1,2)-ULAT_G(1,1))*radian
 
       if(dlon.LE.0.OR.dlat.LE.0) &
           call exit_POP(sigAbort,'ERROR: horiz_grid_option amuse dlon or dlat <=0')
@@ -1133,7 +1133,7 @@ subroutine init_grid1
                   ULAT(i,j,n) = ULAT_G(ig,jg)
                   HTN (i,j,n) = HTN(i,j,n)*cos(ULAT(i,j,n))
                   DXU (i,j,n) = HTN(i,j,n)
-                  lathalf = (ULAT_G(1,1)-dlat + (jg-p5)*dlat)/radian
+                  lathalf = (ULAT_G(1,1)*radian-dlat + (jg-p5)*dlat)/radian
                   HUS (i,j,n) = HUS(i,j,n)*cos(lathalf)
                   DXT (i,j,n) = dlon*radius/radian*       &
                                 p5*(cos(ULAT_G(ig,jg )) + &
