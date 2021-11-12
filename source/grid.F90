@@ -472,7 +472,7 @@ subroutine init_grid1
    select case (horiz_grid_opt)
    case ('amuse')
       if (my_task == master_task) then
-         write(stdout,'(a36)') ' Creating horizontal grid from amuse interfacey'
+         write(stdout,'(a36)') ' Creating horizontal grid from amuse interface'
       endif
       call horiz_grid_amuse(.false.)
    case ('internal')
@@ -1070,30 +1070,18 @@ subroutine init_grid1
    type (block) :: &
       this_block    ! block info for this block
 
-!-----------------------------------------------------------------------
-!
-!  calculate lat/lon coords of U points
-!  long range (-180,180)
-!
-!-----------------------------------------------------------------------
-
-   dlon = 60.0_POP_r8/real(nx_global)
-   dlat = 60.0_POP_r8/real(ny_global)
-!if we do not allocate ulat... then set it from interface
    if (latlon_only) then
+  
+      ! nothing here, but some checks...
 
-      allocate (ULAT_G(nx_global, ny_global), &
-                ULON_G(nx_global, ny_global))
+      if(.NOT.allocated(ULAT_G).OR.(.NOT.allocated(ULON_G))) &
+          call exit_POP(sigAbort,'ERROR: horiz_grid_option amuse broken')
 
-      do i=1,nx_global
-        xdeg = 10.0_POP_r8 + i*dlon
-        if (xdeg > 180.0_POP_r8) xdeg = xdeg - 360.0_POP_r8
-        ULON_G(i,:) = xdeg/radian
-      enddo
+      dlon=ULON_G(2,1)-ULON_G(1,1)
+      dlat=ULAT_G(1,2)-ULAT_G(1,1)
 
-      do j = 1,ny_global
-         ULAT_G(:,j)  = (10.0_POP_r8 + j*dlat)/radian
-      enddo
+      if(dlon.LE.0.OR.dlat.LE.0) &
+          call exit_POP(sigAbort,'ERROR: horiz_grid_option amuse dlon or dlat <=0')
 
 !-----------------------------------------------------------------------
 !
@@ -1104,6 +1092,17 @@ subroutine init_grid1
 !-----------------------------------------------------------------------
 
    else ! not latlon_only
+
+      ! redo checks...
+
+      if(.NOT.allocated(ULAT_G).OR.(.NOT.allocated(ULON_G))) &
+          call exit_POP(sigAbort,'ERROR: horiz_grid_option amuse broken 2')
+
+      dlon=ULON_G(2,1)-ULON_G(1,1)
+      dlat=ULAT_G(1,2)-ULAT_G(1,1)
+
+      if(dlon.LE.0.OR.dlat.LE.0) &
+          call exit_POP(sigAbort,'ERROR: horiz_grid_option amuse dlon or dlat <=0')
 
       !$OMP PARALLEL DO PRIVATE(n, this_block, i, j, ig, jg, lathalf)
       do n=1,nblocks_clinic
@@ -1134,7 +1133,7 @@ subroutine init_grid1
                   ULAT(i,j,n) = ULAT_G(ig,jg)
                   HTN (i,j,n) = HTN(i,j,n)*cos(ULAT(i,j,n))
                   DXU (i,j,n) = HTN(i,j,n)
-                  lathalf = (10.0_POP_r8 + (jg-p5)*dlat)/radian
+                  lathalf = (ULAT_G(1,1)-dlat + (jg-p5)*dlat)/radian
                   HUS (i,j,n) = HUS(i,j,n)*cos(lathalf)
                   DXT (i,j,n) = dlon*radius/radian*       &
                                 p5*(cos(ULAT_G(ig,jg )) + &
@@ -1544,7 +1543,7 @@ subroutine init_grid1
 !-----------------------------------------------------------------------
 
    real (POP_r8), parameter :: &
-      zmax    = 5000.0_POP_r8,  &! max depth in meters
+      zmax    = 4000.0_POP_r8,  &! max depth in meters
       dz_sfc  =   25.0_POP_r8,  &! thickness of sfc layer (meters)
       dz_deep =  400.0_POP_r8    ! thick of deep ocn layers (meters)
 
