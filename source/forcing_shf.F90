@@ -692,9 +692,10 @@ end subroutine read_shf_namelist
       do iblock=1,nblocks_clinic
          select case (shf_formulation)
          case ('restoring')
+!~             SHF_DATA(:,:,iblock,shf_data_sst,1) = &
+!~                25.0_r8*(c1 - sin(ULAT(:,:,iblock))) 
             SHF_DATA(:,:,iblock,shf_data_sst,1) = &
-               25.0_r8*(c1 - sin(ULAT(:,:,iblock))) 
-
+               25.0_r8*( cos(ULAT(:,:,iblock))) 
          end select
       end do ! block loop
       !$OMP END PARALLEL DO
