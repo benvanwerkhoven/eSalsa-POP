@@ -50,7 +50,10 @@
 
    public :: state,        &
              init_state,   &
-             ref_pressure
+             ref_pressure, &
+             sigo,         &
+             rho_leos_ref
+! needed for correcting rho to full rho
 
 !EOP
 !BOC
@@ -71,13 +74,13 @@
 !
 !-----------------------------------------------------------------------
 
-   integer (int_kind), parameter :: &
+   integer (int_kind), public, parameter :: &
       state_type_jmcd       = 1,    &! integer ids for state choice
       state_type_mwjf       = 2,    &
       state_type_polynomial = 3,    &
       state_type_linear     = 4
 
-   integer (int_kind) ::    &
+   integer (int_kind), public ::    &
       state_itype           ! input state type chosen
 
    integer (int_kind) ::    &
