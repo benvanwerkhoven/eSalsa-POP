@@ -1257,6 +1257,14 @@ end subroutine read_ts_namelist
       enddo
       !$OMP END PARALLEL DO
 
+   case ('amuse')
+      first_step = .false.
+      if (my_task == master_task) then
+         write(stdout,'(a63)') &
+        'Initial T,S provided from Omuse accessor'
+         call POP_IOUnitsFlush(POP_stdout) ; call POP_IOUnitsFlush(stdout)
+      endif
+
 !-----------------------------------------------------------------------
 !
 !  bad initialization option
