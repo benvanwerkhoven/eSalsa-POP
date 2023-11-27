@@ -75,6 +75,9 @@
    character (POP_charLength), public :: &
       restart_outfile       ! restart output filename root
 
+   character (POP_charLength), public :: &
+      last_restart_outfile  ! last restart output filename
+
    integer (POP_i4), public :: &
       restart_freq          ! restart frequency
 
@@ -1177,6 +1180,8 @@
                                                   &/'.'/&
                                                   &/trim(file_suffix)
 
+   last_restart_outfile = write_restart_filename
+
 !-----------------------------------------------------------------------
 !
 !  create output file
@@ -1648,6 +1653,7 @@
 !maltrud define defaults
    restart_start_opt = 'nstep'
    restart_start = 1
+   last_restart_outfile = ''
 
    if (my_task == master_task) then
       open (nml_in, file=nml_filename, status='old',iostat=nml_error)
