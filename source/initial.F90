@@ -1257,6 +1257,23 @@ end subroutine read_ts_namelist
       enddo
       !$OMP END PARALLEL DO
 
+   case ('amuse_restart')
+      first_step = .false.
+      if (my_task == master_task) then
+         write(stdout,'(a63)') &
+        'Initial T,S provided from Omuse accessor, providing both old & new state'
+         call POP_IOUnitsFlush(POP_stdout) ; call POP_IOUnitsFlush(stdout)
+      endif
+
+   case ('amuse')
+      first_step = .true.
+      if (my_task == master_task) then
+         write(stdout,'(a63)') &
+        'Initial T,S provided from Omuse accessor, providing only a single state'
+         call POP_IOUnitsFlush(POP_stdout) ; call POP_IOUnitsFlush(stdout)
+      endif
+
+
 !-----------------------------------------------------------------------
 !
 !  bad initialization option
