@@ -25,6 +25,7 @@
    use prognostic
    use tavg
    use exit_mod
+   use forcing_fields, only: STF_stoich
 
    implicit none
    private
@@ -648,6 +649,7 @@ end subroutine read_shf_namelist
    case ('none')
 
       STF(:,:,1,:) = c0
+      STF_stoich(:,:,1,:) = c0
       shf_data_next   = never
       shf_data_update = never
       shf_interp_freq = 'never'
@@ -1653,6 +1655,7 @@ end subroutine read_shf_namelist
             STF(:,:,1,iblock) = (SHF_DATA(:,:,iblock,shf_data_sst,1) - &
                                  TRACER(:,:,1,1,curtime,iblock))*      &
                                  shf_restore_rtau*dz(1)
+            STF_stoich(:,:,1,iblock) = c0
          end do
          !$OMP END PARALLEL DO
 
@@ -1668,6 +1671,7 @@ end subroutine read_shf_namelist
             STF(:,:,1,iblock) = (SHF_DATA(:,:,iblock,shf_data_sst,1) - &
                                  TRACER(:,:,1,1,curtime,iblock))*      &
                                  shf_restore_rtau*dz(1)
+            STF_stoich(:,:,1,iblock) = c0
          end do
          !$OMP END PARALLEL DO
 
@@ -1695,6 +1699,12 @@ end subroutine read_shf_namelist
          call calc_shf_partially_coupled(1)
 
       end select
+
+      !$OMP PARALLEL DO PRIVATE(iblock)
+      do iblock=1,nblocks_clinic
+         STF_stoich(:,:,1,iblock) = c0
+      end do
+      !$OMP END PARALLEL DO
 
    case ('monthly-equal','monthly-calendar')
 
@@ -1747,6 +1757,12 @@ end subroutine read_shf_namelist
 
       end select
 
+      !$OMP PARALLEL DO PRIVATE(iblock)
+      do iblock=1,nblocks_clinic
+         STF_stoich(:,:,1,iblock) = c0
+      end do
+      !$OMP END PARALLEL DO
+
    case('n-hour')
 
       shf_data_label = 'SHF n-hour'
@@ -1796,6 +1812,12 @@ end subroutine read_shf_namelist
          call calc_shf_bulk_ncep(STF, shf_interp_order)
 
       end select
+
+      !$OMP PARALLEL DO PRIVATE(iblock)
+      do iblock=1,nblocks_clinic
+         STF_stoich(:,:,1,iblock) = c0
+      end do
+      !$OMP END PARALLEL DO
 
    end select    ! shf_data_type
 

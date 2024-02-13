@@ -116,10 +116,10 @@
    integer (int_kind) :: &
       sfwf_interp_order,      &! order of temporal interpolation
       sfwf_data_time_min_loc, &! time index for first SFWF_DATA point
-      sfwf_data_num_fields      
+      sfwf_data_num_fields
 
    integer (int_kind), public :: &
-      sfwf_num_comps           
+      sfwf_num_comps
 
    character (char_len), dimension(:), allocatable :: &
       sfwf_data_names          ! short names for input data fields
@@ -154,7 +154,7 @@
    real (r8), dimension (km) :: &
       sal_final
 
-   logical (log_kind) ::   &
+   logical (log_kind), public ::   &
       runoff,              &
       runoff_and_flux,     &
       ladjust_precip
@@ -164,9 +164,9 @@
        sfwf_data_flxio,           &
        sfwf_comp_flxio,           &
        tfw_num_comps,             &
-       tfw_comp_cpl,              & 
-       tfw_comp_flxio       
- 
+       tfw_comp_cpl,              &
+       tfw_comp_flxio
+
    real (r8), parameter :: &
       precip_mean = 3.4e-5_r8
 
@@ -179,9 +179,9 @@
 
    character (char_len), public :: &
       sfwf_data_type,      &! keyword for period of forcing data
-      sfwf_formulation     
+      sfwf_formulation
 
-   logical (log_kind), public ::   & 
+   logical (log_kind), public ::   &
       lms_balance           ! control balancing of P,E,M,R,S in marginal seas
                             ! .T. only with sfc_layer_oldfree option
 
@@ -295,6 +295,9 @@ end subroutine read_sfwf_namelist
 !
 ! !REVISION HISTORY:
 !  same as module
+   use forcing_fields, only: STF_stoich
+
+  implicit none
 
 ! !INPUT/OUTPUT PARAMETERS:
 
@@ -410,7 +413,7 @@ end subroutine read_sfwf_namelist
 
 
    case ('partially-coupled')
-      sfwf_data_num_fields = 2 
+      sfwf_data_num_fields = 2
       sfwf_data_sss   = 1
       sfwf_data_flxio = 2
 
@@ -424,8 +427,8 @@ end subroutine read_sfwf_namelist
       sfwf_bndy_loc  (sfwf_data_flxio) = field_loc_center
       sfwf_bndy_type (sfwf_data_flxio) = field_type_scalar
 
- 
-      sfwf_num_comps  = 4 
+
+      sfwf_num_comps  = 4
       sfwf_comp_wrest = 1
       sfwf_comp_srest = 2
       sfwf_comp_cpl   = 3
@@ -440,7 +443,7 @@ end subroutine read_sfwf_namelist
                     'init_sfwf: Unknown value for sfwf_formulation')
 
    end select
-   
+
    if ( sfwf_formulation == 'bulk-NCEP' .or.  &
         sfwf_formulation == 'partially-coupled' ) then
       !*** calculate initial salinity profile for ocean points that are
@@ -531,6 +534,7 @@ end subroutine read_sfwf_namelist
    case ('none')
 
      STF(:,:,2,:) = c0
+     STF_stoich(:,:,2,:) = c0
      sfwf_data_next = never
      sfwf_data_update = never
      sfwf_interp_freq = 'never'
@@ -550,7 +554,7 @@ end subroutine read_sfwf_namelist
 
       select case (sfwf_formulation)
       case ('restoring')
-         SFWF_DATA(:,:,:,sfwf_data_sss,1) = 0.035_r8 
+         SFWF_DATA(:,:,:,sfwf_data_sss,1) = 0.035_r8
       end select
       sfwf_data_next = never
       sfwf_data_update = never
@@ -568,13 +572,13 @@ end subroutine read_sfwf_namelist
       allocate(SFWF_DATA(nx_block,ny_block,max_blocks_clinic, &
                          sfwf_data_num_fields,1))
       SFWF_DATA = c0
-      
+
       !$OMP PARALLEL DO PRIVATE(iblock)
       do iblock=1,nblocks_clinic
          select case (sfwf_formulation)
          case ('restoring')
             SFWF_DATA(:,:,iblock,sfwf_data_sss,1) = 0.034_r8 + &
-                0.002_r8*cos(ULAT(:,:,iblock)) 
+                0.002_r8*cos(ULAT(:,:,iblock))
          end select
       end do
       !$OMP END PARALLEL DO
@@ -1142,6 +1146,10 @@ end subroutine read_sfwf_namelist
 ! !REVISION HISTORY:
 !  same as module
 
+   use forcing_fields, only: STF_stoich, stf_stoich_ampl
+
+   implicit none
+
 ! !INPUT/OUTPUT PARAMETERS:
 
    real (r8), dimension(nx_block,ny_block,nt,max_blocks_clinic), &
@@ -1340,10 +1348,129 @@ end subroutine read_sfwf_namelist
 
    end select
 
+   ! Set the stoicastic freshwater forcing
+   ! 1. Mask STF on northern atlantic
+   ! 2. Compute mean of masked STF
+   ! 3. STF_stoich = stoich_ampl * (STF_m - \int(STF_m))
+   ! 4. STF += STF_stoich
+   if ( stf_stoich_ampl > 0.0 ) then
+     call calc_stoichastic_sfwf(STF, STF_stoich, stf_stoich_ampl)
+
+     ! Add stoichastic forcing to baseline forcing
+     !$OMP PARALLEL DO PRIVATE(iblock)
+     do iblock = 1, nblocks_clinic
+        STF(:,:,2,iblock) = STF(:,:,2,iblock) + STF_stoich(:,:,2,iblock)
+     enddo
+     !$OMP END PARALLEL DO
+   endif
+
 !-----------------------------------------------------------------------
 !EOC
 
  end subroutine set_sfwf
+
+ subroutine calc_stoichastic_sfwf(STF, STF_stoich, stf_stoich_ampl)
+
+! !DESCRIPTION:
+! Used to add stochastic forcing in the northern atlantic ocean
+! as a fraction of the baseline forcing value in that region. The
+! net addition of forcing should be zero, such that the mean forcing
+! is removed.
+!
+!  Notes:
+
+   implicit none
+
+! !INPUT PARAMETERS:
+
+   real (r8), intent(in) ::  &
+      stf_stoich_ampl   ! Stoichastic forcing amplitude
+
+! !INPUT/OUTPUT PARAMETERS:
+
+   real (r8), dimension(nx_block,ny_block,nt,max_blocks_clinic), &
+      intent(inout) :: &
+      STF     ! surface tracer fluxes for all tracers
+
+! !OUTPUT PARAMETERS:
+
+   real (r8), dimension(nx_block,ny_block,nt,max_blocks_clinic), &
+      intent(out) :: &
+      STF_stoich   ! stochastic surface tracer fluxes for all tracers
+
+   type(block) :: &
+      this_block  ! block info for current block
+
+   integer (int_kind) :: &
+      ierr,&              ! MPI calls error flag
+      i ,j,&              ! cell loop indices
+      iblock              ! block loop index
+
+   real (r8) :: &
+      stf_int_lcl,&       ! Integral of FWF (local)
+      stf_int,&           ! Integral of FWF (global)
+      surf_lcl,&          ! Covered surface (local)
+      surf                ! Covered surface (global)
+
+
+   ! Compute the integral of the STF term and surface
+   ! of the controlled area (area converted from cm^2 to km^2).
+   stf_int_lcl = 0.0
+   surf_lcl = 0.0
+
+   !$OMP PARALLEL DO PRIVATE(iblock, this_block)
+   do iblock = 1, nblocks_clinic
+      this_block = get_block(blocks_clinic(iblock),iblock)
+
+      do j=this_block%jb,this_block%je
+         do i=this_block%ib,this_block%ie
+            if (KMT(i,j,iblock) > 0 .and. &
+               TLAT(i,j,iblock) >= 0.26179939 .and. &
+               TLAT(i,j,iblock) <= 1.22173048 .and. &
+               TLON(i,j,iblock) >= 4.53785606)  then
+               STF_stoich(i,j,2,iblock) = STF(i,j,2,iblock)
+               stf_int_lcl = stf_int_lcl + TAREA(i,j,iblock) * 1.0e-10_POP_r8 * STF_stoich(i,j,2,iblock)
+               surf_lcl = surf_lcl + TAREA(i,j,iblock) * 1.0e-10_POP_r8
+            else
+               STF_stoich(i,j,2,iblock) = c0
+            endif
+         enddo
+      enddo
+   enddo
+   !$OMP END PARALLEL DO
+
+   stf_int = global_sum(stf_int_lcl, distrb_clinic)
+   !write(*,*) " >> Integral of stoich SFWF before correction: ", stf_int
+   surf = global_sum(surf_lcl, distrb_clinic)
+   !write(*,*) " >> Surface covered by stoich SFWF: ", surf
+   stf_int = stf_int / surf
+   !write(*,*) " >> Mean stoich SFWF: ", stf_int
+
+   stf_int_lcl = 0.0
+   !$OMP PARALLEL DO PRIVATE(iblock, this_block)
+   do iblock = 1, nblocks_clinic
+      this_block = get_block(blocks_clinic(iblock),iblock)
+
+      do j=this_block%jb,this_block%je
+         do i=this_block%ib,this_block%ie
+            if (KMT(i,j,iblock) > 0 .and. &
+               TLAT(i,j,iblock) >= 0.26179939 .and. &
+               TLAT(i,j,iblock) <= 1.22173048 .and. &
+               TLON(i,j,iblock) >= 4.53785606)  then
+               STF_stoich(i,j,2,iblock) = stf_stoich_ampl * (STF_stoich(i,j,2,iblock) - stf_int)
+               stf_int_lcl = stf_int_lcl + TAREA(i,j,iblock) * 1.0e-10_POP_r8 * STF_stoich(i,j,2,iblock)
+            else
+               STF_stoich(i,j,2,iblock) = c0
+            endif
+         enddo
+      enddo
+   enddo
+   !$OMP END PARALLEL DO
+
+   stf_int = global_sum(stf_int_lcl, distrb_clinic)
+   !write(*,*) " >> Integral of stoich SFWF after correction and scaling: ", stf_int
+
+ end subroutine calc_stoichastic_sfwf
 
 !***********************************************************************
 !BOP
@@ -1498,7 +1625,7 @@ end subroutine read_sfwf_namelist
                        TRACER(:,:,1,2,curtime,iblock))
       endwhere
 
-      where (KMT(:,:,iblock) > 0 .and. MASK_SR(:,:,iblock) == 0) 
+      where (KMT(:,:,iblock) > 0 .and. MASK_SR(:,:,iblock) == 0)
          SFWF_COMP(:,:,iblock,sfwf_comp_srest) = &
                      -sfwf_strong_restore_ms*    &
                       (SFWF_DATA(:,:,iblock,sfwf_data_sss,now) -      &
@@ -1570,7 +1697,7 @@ end subroutine read_sfwf_namelist
          STF(:,:,2,iblock) = SFWF_COMP(:,:,iblock,sfwf_comp_wrest) + &
                              SFWF_COMP(:,:,iblock,sfwf_comp_srest)
 
-         if (runoff .or. runoff_and_flux) then 
+         if (runoff .or. runoff_and_flux) then
             FW(:,:,iblock) = OCN_WGT(:,:,iblock)*MASK_SR(:,:,iblock)*  &
                              (SFWF_COMP(:,:,iblock,sfwf_comp_evap  ) + &
                               SFWF_COMP(:,:,iblock,sfwf_comp_runoff) + &
@@ -1752,7 +1879,7 @@ end subroutine read_sfwf_namelist
                         k <= KMT(:,:,iblock) .and.               &
                         MASK_SR(:,:,iblock) > 0)
             else
-               WORK1(:,:,iblock) =                               & 
+               WORK1(:,:,iblock) =                               &
                   merge(TRACER(:,:,k,2,curtime,iblock)*          &
                         TAREA(:,:,iblock)*dz(k), c0,             &
                         k <= KMT(:,:,iblock) .and.               &
@@ -1803,16 +1930,16 @@ end subroutine read_sfwf_namelist
  subroutine calc_sfwf_partially_coupled(time_dim)
 
 ! !DESCRIPTION:
-!  Calculate ice-ocean flux, weak restoring, and strong restoring 
+!  Calculate ice-ocean flux, weak restoring, and strong restoring
 !  components of surface freshwater flux for partially-coupled formulation.
 !  these components will later be used in
 !  set\_surface\_forcing (forcing.F) to form the total surface freshwater
 !  (salt) flux.
 !
-!  the forcing data (on t-grid) sets needed are 
+!  the forcing data (on t-grid) sets needed are
 !     sfwf\_data\_sss,    restoring SSS                       (msu)
 !     sfwf\_data\_flxio,  diagnosed ("climatological")        (kg/m^2/s)
-!                       ice-ocean freshwater flux 
+!                       ice-ocean freshwater flux
 
 !
 ! !REVISION HISTORY:
@@ -2050,7 +2177,7 @@ end subroutine read_sfwf_namelist
                         k <= KMT(:,:,iblock) .and.               &
                         MASK_SR(:,:,iblock) > 0)
             else
-               WORK1(:,:,iblock) =                               & 
+               WORK1(:,:,iblock) =                               &
                   merge(TRACER(:,:,k,2,curtime,iblock)*          &
                         TAREA(:,:,iblock)*dz(k), c0,             &
                         k <= KMT(:,:,iblock) .and.               &
@@ -2188,7 +2315,7 @@ end subroutine read_sfwf_namelist
 !-----------------------------------------------------------------------
 !
 !  change "precip_fact" based on tendency of freshwater and previous
-!  amount of precipitation 
+!  amount of precipitation
 !
 !-----------------------------------------------------------------------
    if (sfwf_formulation == 'partially-coupled') then
