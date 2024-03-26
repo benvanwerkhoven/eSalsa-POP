@@ -1353,7 +1353,7 @@ end subroutine read_sfwf_namelist
    ! 2. Compute mean of masked STF
    ! 3. STF_stoich = stoich_ampl * (STF_m - \int(STF_m))
    ! 4. STF += STF_stoich
-   if ( stf_stoich_ampl > 0.0 ) then
+   if ( stf_stoich_ampl /= 0.0 ) then
      call calc_stoichastic_sfwf(STF, STF_stoich, stf_stoich_ampl)
 
      ! Add stoichastic forcing to baseline forcing
