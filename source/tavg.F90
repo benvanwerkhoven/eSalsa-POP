@@ -5,7 +5,7 @@
 !BOP
 ! !MODULE: tavg
 ! !DESCRIPTION:
-!  This module contains data types and routines for computing running 
+!  This module contains data types and routines for computing running
 !  time-averages of selected fields and writing this data to files.
 !
 ! !REVISION HISTORY:
@@ -23,6 +23,7 @@
    use grid
    use time_management
    use global_reductions
+   use gather_scatter
    use broadcast
    use io
    use exit_mod
@@ -46,7 +47,10 @@
 
    logical (log_kind), public :: &
       ltavg_on      = .false., & ! tavg file output wanted
-      ltavg_restart = .false.    ! run started from restart
+      ltavg_restart = .false., & ! run started from restart
+      tavg_do_MOC_Strength = .false., &
+      tavg_no_write = .false., &
+      skip_tavg_dump = .false.
 
    integer (int_kind), parameter, public :: &
       tavg_method_unknown = 0,              &
@@ -103,6 +107,61 @@
 
    type (tavg_field_desc), dimension(max_avail_tavg_fields) :: &
       avail_tavg_fields
+
+!-----------------------------------------------------------------------
+!
+!  AMOC diagnostic
+!
+!-----------------------------------------------------------------------
+
+   real (r8), dimension(:),public,allocatable ::  &
+      lat_aux_center,     &! cell center latitude values (degrees north)
+      lat_aux_edge         ! cell edge   latitude values (degrees north)
+
+   integer (int_kind), dimension(:,:), allocatable ::  &
+      ATLANTIC_MASK_LAT_AUX   ! Global atlantic mask (master_task only)
+
+   integer (int_kind), dimension(nx_block,ny_block,max_blocks_clinic), public :: &
+      ATLANTIC_MASK_LAT       ! Local (blocks) atlantic mask
+
+   integer (int_kind) :: &
+      lat_aux_region_start    ! starting latitude indices for AMOC
+
+   real (r4), dimension(:), allocatable :: &  ! Array for read-in atlantic mask
+      ATLANTIC_MASK_LONG, &
+      ATLANTIC_MASK_LONG_MIN, &
+      ATLANTIC_MASK_LONG_MAX
+
+   character (char_len), public ::    &       ! Read in atlantic mask file
+      atlantic_mask_file
+
+   real (r8), dimension(:,:), allocatable ::  &
+      TLATD_G              ! latitude of T points in degrees (global array)
+
+   real (r8), dimension(:,:,:), public, allocatable ::  &
+      TAVG_MOC_G             ! meridional overturning circulation (master_task only)
+
+   integer (int_kind), public :: &
+      n_lat_aux_grid          ! Number of lat grid points in aux grid
+
+   real (r8), public ::          &
+      lat_aux_begin,        & ! beginning latitude for the auxilary
+                              !    grid (degrees north)
+      lat_aux_end             ! ending latitude for the auxilary
+                              !    grid (degrees north)
+
+   integer (int_kind) :: &
+      amoc_strength_target_lat_idx, &   ! Latitude of the target AMOC scalar probe
+      amoc_strength_target_depth_idx    ! Depth of the target AMOC scalar probe
+
+   real (r8), public :: &               ! Scalar estimate of the AMOC strength
+      amoc_strength
+
+   integer (int_kind) ::  & ! indices needed for tavg AMOC diagnostics
+      tavg_id_WVEL,       &
+      tavg_id_VVEL,       &
+      tavg_loc_WVEL,      &
+      tavg_loc_VVEL
 
 !-----------------------------------------------------------------------
 !
@@ -164,6 +223,8 @@
    character (44), parameter :: &
       start_fmt = "('tavg sums accumulated starting at ',a5,i8)"
 
+   character (char_len) :: exit_string
+
 !EOC
 !***********************************************************************
 
@@ -196,7 +257,10 @@
 
    namelist /tavg_nml/ tavg_freq_opt, tavg_freq, tavg_infile,       &
                        tavg_outfile, tavg_contents, tavg_start_opt, &
-                       tavg_start, tavg_fmt_in, tavg_fmt_out 
+                       tavg_start, tavg_fmt_in, tavg_fmt_out,       &
+                       skip_tavg_dump,                              &
+                       tavg_do_MOC_Strength, n_lat_aux_grid, lat_aux_begin, &
+                       lat_aux_end, atlantic_mask_file
 
 !-----------------------------------------------------------------------
 !
@@ -219,6 +283,10 @@
    tavg_infile    = 'unknown_tavg_infile'
    tavg_outfile   = 't'
    tavg_contents  = 'unknown_tavg_contents'
+   lat_aux_begin      = -90.0_r8
+   lat_aux_end        =  90.0_r8
+   n_lat_aux_grid     =  180
+   atlantic_mask_file = 'unknown_atlantic_mask_file'
 
    if (my_task == master_task) then
       open (nml_in, file=nml_filename, status='old',iostat=nml_error)
@@ -318,14 +386,19 @@ subroutine init_tavg
    if (tavg_freq_iopt == -1000) then
       call exit_POP(sigAbort,'unknown option for tavg file frequency')
    else if (tavg_freq_iopt /= freq_opt_never) then
-      call broadcast_scalar(tavg_freq,         master_task)
-      call broadcast_scalar(tavg_start_iopt,   master_task)
-      call broadcast_scalar(tavg_start,        master_task)
-      call broadcast_scalar(tavg_infile,       master_task)
-      call broadcast_scalar(tavg_outfile,      master_task)
-      call broadcast_scalar(tavg_contents,     master_task)
-      call broadcast_scalar(tavg_fmt_in,       master_task)
-      call broadcast_scalar(tavg_fmt_out,      master_task)
+      call broadcast_scalar(tavg_freq,            master_task)
+      call broadcast_scalar(tavg_start_iopt,      master_task)
+      call broadcast_scalar(tavg_start,           master_task)
+      call broadcast_scalar(tavg_infile,          master_task)
+      call broadcast_scalar(tavg_outfile,         master_task)
+      call broadcast_scalar(tavg_contents,        master_task)
+      call broadcast_scalar(tavg_fmt_in,          master_task)
+      call broadcast_scalar(tavg_fmt_out,         master_task)
+      call broadcast_scalar(skip_tavg_dump,       master_task)
+      call broadcast_scalar(tavg_do_MOC_Strength, master_task)
+      call broadcast_scalar(n_lat_aux_grid,       master_task)
+      call broadcast_scalar(lat_aux_begin,        master_task)
+      call broadcast_scalar(lat_aux_end,          master_task)
 
       if (tavg_start_iopt == -1000) then
          call exit_POP(sigAbort,'unknown option for tavg start option')
@@ -447,6 +520,10 @@ subroutine init_tavg
       end do
       !$OMP END PARALLEL DO
 
+      if (tavg_do_MOC_Strength) then
+        call init_tavg_amoc
+      endif
+
    endif
 
 !-----------------------------------------------------------------------
@@ -459,7 +536,7 @@ subroutine init_tavg
    call tavg_set_flag(flagonly=.true.)
    call eval_time_flag(tavg_flag) ! evaluates time_flag(tavg_flag)%value via time_to_do
 
-   if (ltavg_on .and. ltavg_restart) then
+   if (ltavg_on .and. (ltavg_restart .and. (.not. skip_tavg_dump))) then
       !*** do not read restart if last restart was at a tavg dump
       !*** interval (should start new tavg sums in this case)
       if (.not. check_time_flag(tavg_flag)) call read_tavg
@@ -518,7 +595,7 @@ subroutine init_tavg
 
       !*** if it is time to start, make sure requested fields
       !*** get triggered by the requested function
- 
+
       if (ltavg_on) then
          do n=1,num_avail_tavg_fields
             if (avail_tavg_fields(n)%buf_loc < 0) &
@@ -700,23 +777,37 @@ subroutine init_tavg
 
 !-----------------------------------------------------------------------
 !
+!     AMOC strength calculation
+!
+!-----------------------------------------------------------------------
+      if (tavg_do_MOC_Strength) then
+        if (my_task == master_task) then
+          write(*,*) "Averaging time: ", tavg_sum
+        endif
+        call tavg_amoc_diags
+      endif
+
+!-----------------------------------------------------------------------
+!
 !     create data file descriptor
 !
 !-----------------------------------------------------------------------
 
-      call date_and_time(date=date_created, time=time_created)
-      hist_string = char_blank
-      write(hist_string,'(a23,a8,1x,a10)') & 
-         'POP TAVG file created: ',date_created,time_created
+      if (.not. skip_tavg_dump) then
 
-      tavg_file_desc = construct_file(tavg_fmt_out,                    &
-                                   root_name  = trim(tavg_outfile),    &
-                                   file_suffix= trim(file_suffix),     &
-                                   title      ='POP TAVG file',        &
-                                   conventions='POP TAVG conventions', &
-                                   history    = trim(hist_string),     &
-                                   record_length = rec_type_real,      &
-                                   recl_words=nx_global*ny_global)
+        call date_and_time(date=date_created, time=time_created)
+        hist_string = char_blank
+        write(hist_string,'(a23,a8,1x,a10)') &
+           'POP TAVG file created: ',date_created,time_created
+
+        tavg_file_desc = construct_file(tavg_fmt_out,                    &
+                                     root_name  = trim(tavg_outfile),    &
+                                     file_suffix= trim(file_suffix),     &
+                                     title      ='POP TAVG file',        &
+                                     conventions='POP TAVG conventions', &
+                                     history    = trim(hist_string),     &
+                                     record_length = rec_type_real,      &
+                                     recl_words=nx_global*ny_global)
 
 !-----------------------------------------------------------------------
 !
@@ -724,13 +815,13 @@ subroutine init_tavg
 !
 !-----------------------------------------------------------------------
 
-      call add_attrib_file(tavg_file_desc, 'tavg_sum'    , tavg_sum)
-      call add_attrib_file(tavg_file_desc, 'nsteps_total', nsteps_total)
-      call add_attrib_file(tavg_file_desc, 'tday'        , tday)
-      call add_attrib_file(tavg_file_desc, 'iyear'       , iyear)
-      call add_attrib_file(tavg_file_desc, 'imonth'      , imonth)
-      call add_attrib_file(tavg_file_desc, 'iday'        , iday)
-      call add_attrib_file(tavg_file_desc, 'beg_date'    , beg_date)
+        call add_attrib_file(tavg_file_desc, 'tavg_sum'    , tavg_sum)
+        call add_attrib_file(tavg_file_desc, 'nsteps_total', nsteps_total)
+        call add_attrib_file(tavg_file_desc, 'tday'        , tday)
+        call add_attrib_file(tavg_file_desc, 'iyear'       , iyear)
+        call add_attrib_file(tavg_file_desc, 'imonth'      , imonth)
+        call add_attrib_file(tavg_file_desc, 'iday'        , iday)
+        call add_attrib_file(tavg_file_desc, 'beg_date'    , beg_date)
 
 !-----------------------------------------------------------------------
 !
@@ -738,7 +829,7 @@ subroutine init_tavg
 !
 !-----------------------------------------------------------------------
 
-      call data_set (tavg_file_desc, 'open')
+        call data_set (tavg_file_desc, 'open')
 
 !-----------------------------------------------------------------------
 !
@@ -746,56 +837,56 @@ subroutine init_tavg
 !     in this first phase, we define all the fields to be written
 !
 !-----------------------------------------------------------------------
- 
-      !*** define dimensions
 
-      i_dim = construct_io_dim('i',nx_global)
-      j_dim = construct_io_dim('j',ny_global)
-      k_dim = construct_io_dim('k',km)
+        !*** define dimensions
 
-      allocate(tavg_fields(num_avail_tavg_fields))
+        i_dim = construct_io_dim('i',nx_global)
+        j_dim = construct_io_dim('j',ny_global)
+        k_dim = construct_io_dim('k',km)
 
-      do nfield = 1,num_avail_tavg_fields  ! check all available fields
+        allocate(tavg_fields(num_avail_tavg_fields))
 
-         loc = avail_tavg_fields(nfield)%buf_loc ! locate field in buffer
+        do nfield = 1,num_avail_tavg_fields  ! check all available fields
 
-         if (loc > 0) then  ! field is actually requested and in buffer
+           loc = avail_tavg_fields(nfield)%buf_loc ! locate field in buffer
 
-            !*** construct io_field descriptors for each field
+           if (loc > 0) then  ! field is actually requested and in buffer
 
-            if (avail_tavg_fields(nfield)%ndims == 2) then
+              !*** construct io_field descriptors for each field
 
-               tavg_fields(nfield) = construct_io_field(               &
-                              avail_tavg_fields(nfield)%short_name,    &
-                              i_dim, j_dim,                            &
-                    long_name=avail_tavg_fields(nfield)%long_name,     &
-                    units    =avail_tavg_fields(nfield)%units    ,     &
-                    grid_loc =avail_tavg_fields(nfield)%grid_loc ,     &
-                   field_loc =avail_tavg_fields(nfield)%field_loc,     &
-                  field_type =avail_tavg_fields(nfield)%field_type,    &
-                missing_value=avail_tavg_fields(nfield)%missing_value, &
-                  valid_range=avail_tavg_fields(nfield)%valid_range,   &
-                   r2d_array =TAVG_BUF_2D(:,:,:,loc) )
+              if (avail_tavg_fields(nfield)%ndims == 2) then
 
-            else if (avail_tavg_fields(nfield)%ndims == 3) then
+                 tavg_fields(nfield) = construct_io_field(               &
+                                avail_tavg_fields(nfield)%short_name,    &
+                                i_dim, j_dim,                            &
+                      long_name=avail_tavg_fields(nfield)%long_name,     &
+                      units    =avail_tavg_fields(nfield)%units    ,     &
+                      grid_loc =avail_tavg_fields(nfield)%grid_loc ,     &
+                     field_loc =avail_tavg_fields(nfield)%field_loc,     &
+                    field_type =avail_tavg_fields(nfield)%field_type,    &
+                  missing_value=avail_tavg_fields(nfield)%missing_value, &
+                    valid_range=avail_tavg_fields(nfield)%valid_range,   &
+                     r2d_array =TAVG_BUF_2D(:,:,:,loc) )
 
-               tavg_fields(nfield) = construct_io_field(               &
-                              avail_tavg_fields(nfield)%short_name,    &
-                              i_dim, j_dim, dim3=k_dim,                &
-                    long_name=avail_tavg_fields(nfield)%long_name,     &
-                    units    =avail_tavg_fields(nfield)%units    ,     &
-                    grid_loc =avail_tavg_fields(nfield)%grid_loc ,     &
-                   field_loc =avail_tavg_fields(nfield)%field_loc,     &
-                  field_type =avail_tavg_fields(nfield)%field_type,    &
-                missing_value=avail_tavg_fields(nfield)%missing_value, &
-                  valid_range=avail_tavg_fields(nfield)%valid_range,   &
-                   r3d_array =TAVG_BUF_3D(:,:,:,:,loc) )
+              else if (avail_tavg_fields(nfield)%ndims == 3) then
 
-            endif
+                 tavg_fields(nfield) = construct_io_field(               &
+                                avail_tavg_fields(nfield)%short_name,    &
+                                i_dim, j_dim, dim3=k_dim,                &
+                      long_name=avail_tavg_fields(nfield)%long_name,     &
+                      units    =avail_tavg_fields(nfield)%units    ,     &
+                      grid_loc =avail_tavg_fields(nfield)%grid_loc ,     &
+                     field_loc =avail_tavg_fields(nfield)%field_loc,     &
+                    field_type =avail_tavg_fields(nfield)%field_type,    &
+                  missing_value=avail_tavg_fields(nfield)%missing_value, &
+                    valid_range=avail_tavg_fields(nfield)%valid_range,   &
+                     r3d_array =TAVG_BUF_3D(:,:,:,:,loc) )
 
-            call data_set (tavg_file_desc, 'define', tavg_fields(nfield))
-         endif
-      end do
+              endif
+
+              call data_set (tavg_file_desc, 'define', tavg_fields(nfield))
+           endif
+        end do
 
 !-----------------------------------------------------------------------
 !
@@ -805,24 +896,24 @@ subroutine init_tavg
 !     file can be closed
 !
 !-----------------------------------------------------------------------
- 
-      do nfield = 1,num_avail_tavg_fields  ! check all available fields
 
-         loc = avail_tavg_fields(nfield)%buf_loc ! locate field in buffer
+        do nfield = 1,num_avail_tavg_fields  ! check all available fields
 
-         if (loc > 0) then  ! field is actually requested and in buffer
-            call data_set (tavg_file_desc, 'write', tavg_fields(nfield))
-            call destroy_io_field(tavg_fields(nfield))
-         endif
-      end do
+           loc = avail_tavg_fields(nfield)%buf_loc ! locate field in buffer
 
-      deallocate(tavg_fields)
-      call data_set (tavg_file_desc, 'close')
+           if (loc > 0) then  ! field is actually requested and in buffer
+              call data_set (tavg_file_desc, 'write', tavg_fields(nfield))
+              call destroy_io_field(tavg_fields(nfield))
+           endif
+        end do
 
-      if (my_task == master_task) then
-         write(stdout,blank_fmt)
-         write(stdout,*) 'Wrote file: ', trim(tavg_file_desc%full_name)
-      endif
+        deallocate(tavg_fields)
+        call data_set (tavg_file_desc, 'close')
+
+        if (my_task == master_task) then
+           write(stdout,blank_fmt)
+           write(stdout,*) 'Wrote file: ', trim(tavg_file_desc%full_name)
+        endif
 
 !-----------------------------------------------------------------------
 !
@@ -831,19 +922,21 @@ subroutine init_tavg
 !
 !-----------------------------------------------------------------------
 
-      if (luse_pointer_files .and. .not. lreset_tavg) then
-         call get_unit(nu)
-         if (my_task == master_task) then
-            tavg_pointer_file = trim(pointer_filename)/&
-                                                       &/'.tavg'
+        if (luse_pointer_files .and. .not. lreset_tavg) then
+           call get_unit(nu)
+           if (my_task == master_task) then
+              tavg_pointer_file = trim(pointer_filename)/&
+                                                         &/'.tavg'
 
-            open(nu,file=tavg_pointer_file,form='formatted', &
-                    status='unknown')
-            write(nu,'(a)') trim(tavg_file_desc%full_name)
-            close(nu)
-         endif
-         call release_unit(nu)
-      endif
+              open(nu,file=tavg_pointer_file,form='formatted', &
+                      status='unknown')
+              write(nu,'(a)') trim(tavg_file_desc%full_name)
+              close(nu)
+           endif
+           call release_unit(nu)
+        endif
+
+      endif ! test on skip_tavg_dump
 
 !-----------------------------------------------------------------------
 !
@@ -981,7 +1074,7 @@ subroutine init_tavg
 
 !-----------------------------------------------------------------------
 !
-!  if pointer files are used, pointer file and must be read to get 
+!  if pointer files are used, pointer file and must be read to get
 !  actual filenames
 !
 !-----------------------------------------------------------------------
@@ -1294,7 +1387,7 @@ subroutine init_tavg
          !*** 3-d fields
 
          else
-      
+
             !$OMP PARALLEL DO PRIVATE(k)
             do iblock = 1,nblocks_clinic
                WORK(:,:,iblock) = c0
@@ -1303,7 +1396,7 @@ subroutine init_tavg
 
                case(field_loc_center)
                   do k=1,km
-                     RMASK = merge(c1, c0, k <= KMT(:,:,iblock)) 
+                     RMASK = merge(c1, c0, k <= KMT(:,:,iblock))
                      WORK(:,:,iblock) = WORK(:,:,iblock) + dz(k)* &
                                         TAVG_BUF_3D(:,:,k,iblock,ifield)* &
                                         TAREA(:,:,iblock)*RMASK
@@ -1311,7 +1404,7 @@ subroutine init_tavg
 
                case(field_loc_NEcorner)
                   do k=1,km
-                     RMASK = merge(c1, c0, k <= KMU(:,:,iblock)) 
+                     RMASK = merge(c1, c0, k <= KMU(:,:,iblock))
                      WORK(:,:,iblock) = WORK(:,:,iblock) + dz(k)* &
                                         TAVG_BUF_3D(:,:,k,iblock,ifield)* &
                                         UAREA(:,:,iblock)*RMASK
@@ -1319,7 +1412,7 @@ subroutine init_tavg
 
                case default ! make U cell the default for all other cases
                   do k=1,km
-                     RMASK = merge(c1, c0, k <= KMU(:,:,iblock)) 
+                     RMASK = merge(c1, c0, k <= KMU(:,:,iblock))
                      WORK(:,:,iblock) = WORK(:,:,iblock) + dz(k)* &
                                         TAVG_BUF_3D(:,:,k,iblock,ifield)* &
                                         UAREA(:,:,iblock)*RMASK
@@ -1365,8 +1458,8 @@ subroutine init_tavg
 
 ! !DESCRIPTION:
 !  This routine updates a tavg field.  If the time average of the
-!  field is requested, it accumulates a time sum of a field by 
-!  multiplying by the time step and accumulating the sum into the 
+!  field is requested, it accumulates a time sum of a field by
+!  multiplying by the time step and accumulating the sum into the
 !  tavg buffer array.  If the min or max of a field is requested, it
 !  checks the current value and replaces the min, max if the current
 !  value is less than or greater than the stored value.
@@ -1382,7 +1475,7 @@ subroutine init_tavg
       field_id          ! index into available fields for tavg field info
 
    real (r8), dimension(nx_block,ny_block), intent(in) :: &
-      ARRAY             ! array of data for this block to add to 
+      ARRAY             ! array of data for this block to add to
                         !  accumulated sum in tavg buffer
 !EOP
 !BOC
@@ -1488,7 +1581,7 @@ subroutine init_tavg
       ndims                     ! number of dims (2 or 3) of tavg field
 
    integer (i4), intent(in), optional :: &
-      field_loc,              &! location in grid 
+      field_loc,              &! location in grid
       field_type,             &! type of field (scalar, vector, angle)
       tavg_method              ! id for method of averaging
                                ! default is tavg_method_avg
@@ -1521,7 +1614,7 @@ subroutine init_tavg
       call exit_POP(sigAbort, &
                     'tavg: defined tavg fields > max allowed')
    endif
- 
+
    id = num_avail_tavg_fields
 
 !-----------------------------------------------------------------------
@@ -1694,8 +1787,8 @@ subroutine init_tavg
 
 ! !DESCRIPTION:
 !  This function determines whether an available (defined) tavg field
-!  has been requested by a user (through the input contents file) and 
-!  returns true if it has.  Note that if tavg has been turned off, 
+!  has been requested by a user (through the input contents file) and
+!  returns true if it has.  Note that if tavg has been turned off,
 !  the function will always return false.
 !
 ! !REVISION HISTORY:
@@ -1745,7 +1838,7 @@ subroutine init_tavg
  subroutine create_suffix_tavg(file_suffix)
 
 ! !DESCRIPTION:
-!  Creates a suffix to append to output filename based on frequency 
+!  Creates a suffix to append to output filename based on frequency
 !  option and averaging interval.
 !
 ! !REVISION HISTORY:
@@ -1774,7 +1867,7 @@ subroutine init_tavg
    character (10) :: &
       cstep_beg,     &! beginning step  of this particular average
       cstep_end,     &! ending    step  of this particular average
-      cdate           ! character string with yyyymmdd and optional 
+      cdate           ! character string with yyyymmdd and optional
                       ! separator (eg yyyy-mm-dd)
 
    character (4) :: &
@@ -1798,7 +1891,7 @@ subroutine init_tavg
    file_suffix(1:cindx2) = trim(runid)/&
                                        &/'.'
    cindx1 = cindx2 + 1
-   
+
 !-----------------------------------------------------------------------
 !
 !  extract beginning year, month, day or time step from beg_date
@@ -1899,7 +1992,7 @@ subroutine init_tavg
                                  &/trim(cstep_end)
 
    end select
- 
+
 !-----------------------------------------------------------------------
 !EOC
 
@@ -1907,6 +2000,490 @@ subroutine init_tavg
 
 !***********************************************************************
 
- end module tavg
+!***********************************************************************
+!BOP
+! !IROUTINE: set_in_tavg_contents
+! !INTERFACE:
 
+ function set_in_tavg_contents(id)
+
+! !DESCRIPTION:
+!  This function determines whether a tavg field has been set in
+!  the input contents file and returns true if it has.  This function is
+!  different from tavg_requested in that ltavg_on status is irrelevent.
+!
+! !REVISION HISTORY:
+!  same as module
+
+! !INPUT PARAMETERS:
+
+   integer (int_kind), intent(in) :: &
+      id                   ! id returned by the define function which
+                           !   gives the location of the field
+
+! !OUTPUT PARAMETERS:
+
+   logical (log_kind) ::      &
+      set_in_tavg_contents    ! result of checking whether the field has
+                               !   been requested
+
+!EOP
+!BOC
+!-----------------------------------------------------------------------
+!
+!  check the buffer location - if not zero, then the field is in the
+!  tavg contents file
+!
+!-----------------------------------------------------------------------
+
+   if (id < 1 .or. id > num_avail_tavg_fields) then
+     set_in_tavg_contents = .false.
+   elseif (avail_tavg_fields(id)%buf_loc /= 0) then
+     set_in_tavg_contents = .true.
+   else
+     set_in_tavg_contents = .false.
+   endif
+
+!-----------------------------------------------------------------------
+!EOC
+
+ end function set_in_tavg_contents
+
+!***********************************************************************
+!BOP
+! !IROUTINE: tavg_id
+! !INTERFACE:
+
+ function tavg_id(short_name,quiet)
+
+! !DESCRIPTION:
+!  This function determines whether a tavg field has been defined
+!  by some module.  If so, then the id of that field is returned.
+!  This function does not cause a model exit if the field has not
+!  been defined; error-checking must be done by the calling routine.
+!
+! !REVISION HISTORY:
+!  same as module
+
+! !INPUT PARAMETERS:
+
+   character (*), intent(in)  :: &
+      short_name                  ! the short name of the tavg field
+
+   logical (log_kind), intent(in), optional :: &
+      quiet                        ! do not print error message
+
+! !OUTPUT PARAMETERS:
+
+   integer (int_kind) :: &
+      tavg_id               ! id of the tavg field, if it exists
+
+!EOP
+!BOC
+
+!-----------------------------------------------------------------------
+!
+!  local variables
+!
+!-----------------------------------------------------------------------
+   integer (int_kind) ::  &
+     id,                  &
+     n
+
+   logical (log_kind) ::  &
+     msg
+
+   id = 0
+
+   srch_loop: do n=1,num_avail_tavg_fields
+      if (trim(avail_tavg_fields(n)%short_name) == trim(short_name)) then
+         id = n
+         exit srch_loop
+      endif
+   end do srch_loop
+
+   msg = .true.
+   if (present(quiet)) then
+     if (quiet) msg = .false.
+   endif
+
+   if (id == 0 .and. msg) then
+      if (my_task == master_task)  &
+          write(stdout,*) 'Field ', trim(short_name), ' has not been defined.'
+   endif
+
+   tavg_id = id
+
+!-----------------------------------------------------------------------
+!EOC
+
+ end function tavg_id
+
+!***********************************************************************
+!BOP
+! !IROUTINE: init_tavg_amoc
+! !INTERFACE:
+
+  subroutine init_tavg_amoc
+
+    ! !DESCRIPTION:
+    !
+    !  Compute atlantic meridional overturning circulation diagnostically from
+    !  other tavg quantities
+    !
+    !
+    ! !REVISION HISTORY:
+    !  same as module
+
+    integer (int_kind) ::   &
+      i,j,k,ig,igp1,jg,n,right_idx,iblock,        & ! loop indices
+      nu,            &
+      ioerr
+
+    logical :: is_found
+
+    real (r8) :: &
+      p_lat, p_lon, dlat, dlon, &
+      long_deg, lat_deg      ! work variable for auxilary grid spacing (degrees)
+
+    real (r8), dimension(nx_block,ny_block,max_blocks_clinic) ::  &
+      WORK
+
+    type(block) :: &
+       this_block  ! block info for current block
+    !EOP
+    !BOC
+
+    !-------------------------------------------------------------------------
+    ! Check for requireds field if AMOC strength is requested
+    tavg_id_WVEL = tavg_id('WVEL')
+    tavg_id_VVEL = tavg_id('VVEL')
+    if (tavg_id_WVEL == 0 .or.  &
+        tavg_id_VVEL == 0 )     then
+      exit_string = 'FATAL ERROR: for amoc diagnostics, WVEL and VVEL must be requested in tavg_contents file'
+      call exit_POP (sigAbort,exit_string)
+    endif
+
+    if (my_task == master_task) then
+       write(stdout,'(A)') 'Computing AMOC strength from averaged quantities requested.'
+    endif
+
+    tavg_loc_WVEL = 0 ; tavg_loc_VVEL = 0
+    tavg_loc_WVEL = abs(avail_tavg_fields(tavg_id_WVEL)%buf_loc)
+    tavg_loc_VVEL = abs(avail_tavg_fields(tavg_id_VVEL)%buf_loc)
+
+    ! Build auxiliary grid
+    if (my_task == master_task) then
+      allocate ( TLATD_G(nx_global,ny_global) )
+    endif
+
+    WORK = TLAT * radian
+    call gather_global (TLATD_G, WORK, master_task, distrb_clinic)
+
+    !-------------------------------------------------------------------------
+    ! Allocate aux grid array
+    allocate ( lat_aux_edge  (n_lat_aux_grid+1),  &
+               lat_aux_center(n_lat_aux_grid  ) )
+
+    dlat = (lat_aux_end - lat_aux_begin) / dble(n_lat_aux_grid)
+
+    do j=1,n_lat_aux_grid+1
+      lat_aux_edge(j) = lat_aux_begin + dble(j-1)*dlat
+    enddo
+
+    do j=1,n_lat_aux_grid
+      lat_aux_center(j) = lat_aux_begin + p5*dlat + dble(j-1)*dlat
+    enddo
+
+    if ( my_task == master_task ) then
+      allocate (TAVG_MOC_G(n_lat_aux_grid+1,km+1,1))
+    endif
+
+    !-------------------------------------------------------------------------
+    ! Build atlantic mask
+    allocate(ATLANTIC_MASK_LONG(n_lat_aux_grid))
+    allocate(ATLANTIC_MASK_LONG_MIN(n_lat_aux_grid))
+    allocate(ATLANTIC_MASK_LONG_MAX(n_lat_aux_grid))
+
+    ! Read mask file data
+    call get_unit(nu)
+    if (my_task == master_task) then
+       open(nu,file=atlantic_mask_file,status='old',form='formatted', iostat=ioerr)
+    endif
+    call broadcast_scalar(ioerr, master_task)
+    if (ioerr /= 0) call exit_POP(sigAbort, 'Error opening atlantic_mask_file')
+
+    if (my_task == master_task) then
+       if (ioerr == 0) then ! successful open
+          grid_read: do j = 1, n_lat_aux_grid
+             read(nu,*,iostat=ioerr) ATLANTIC_MASK_LONG(j), ATLANTIC_MASK_LONG_MIN(j), ATLANTIC_MASK_LONG_MAX(j)
+             if (ioerr /= 0) exit grid_read
+          end do grid_read
+          close(nu)
+       endif
+    endif
+    call release_unit(nu)
+
+    call broadcast_scalar(ioerr, master_task)
+    if (ioerr /= 0) call exit_POP(sigAbort, 'Error reading atlantic_mask_file')
+
+    call broadcast_array(ATLANTIC_MASK_LONG, master_task)
+    call broadcast_array(ATLANTIC_MASK_LONG_MIN, master_task)
+    call broadcast_array(ATLANTIC_MASK_LONG_MAX, master_task)
+
+    if (my_task == master_task) then
+      allocate (ATLANTIC_MASK_LAT_AUX(nx_global,ny_global) )
+    endif
+
+    !$OMP PARALLEL DO PRIVATE(iblock, this_block)
+    do iblock = 1, nblocks_clinic
+       this_block = get_block(blocks_clinic(iblock),iblock)
+
+       do j=this_block%jb,this_block%je
+          do i=this_block%ib,this_block%ie
+             long_deg = TLON(i,j,iblock) * radian
+             lat_deg = TLAT(i,j,iblock) * radian
+             if (long_deg > 180.0) then
+                long_deg = long_deg - 360.0
+             endif
+
+             if (lat_deg < ATLANTIC_MASK_LONG(1)) then
+               right_idx = 1
+             else if (lat_deg > ATLANTIC_MASK_LONG(n_lat_aux_grid)) then
+               right_idx = n_lat_aux_grid-1
+             else
+               do n = 1, n_lat_aux_grid-1
+                 if (lat_deg >= ATLANTIC_MASK_LONG(n) .and. &
+                     lat_deg < ATLANTIC_MASK_LONG(n+1) ) then
+                    right_idx = n
+                    exit
+                 endif
+               enddo
+             endif
+
+             if (KMT(i,j,iblock) > 0 .and. &
+                 lat_deg >= ATLANTIC_MASK_LONG(1) .and. &
+                 lat_deg < ATLANTIC_MASK_LONG(n_lat_aux_grid) .and. &
+                 long_deg >= ATLANTIC_MASK_LONG_MIN(right_idx) .and. &
+                 long_deg <= ATLANTIC_MASK_LONG_MAX(right_idx+1))  then
+                ATLANTIC_MASK_LAT(i,j,iblock) = 1
+             else
+                ATLANTIC_MASK_LAT(i,j,iblock) = 0
+             endif
+          enddo
+       enddo
+    enddo
+
+    call gather_global (ATLANTIC_MASK_LAT_AUX(:,:), ATLANTIC_MASK_LAT(:,:,:),&
+                        master_task,distrb_clinic)
+
+    if (my_task == master_task) then
+      !-------------------------------------------------------------------------
+      ! Get data for final AMOC strength estimate location
+      amoc_strength_target_lat_idx = -1
+      do j = 1, n_lat_aux_grid+1
+        if ( abs(lat_aux_edge(j)-26.0d0) < 0.01) then
+           amoc_strength_target_lat_idx = j
+           exit
+        endif
+      enddo
+      if (amoc_strength_target_lat_idx < 0) then
+        call exit_POP (sigAbort,"Can't find an aux grid latitude close to target 26 deg N")
+      endif
+      do k = 1, km
+        if (zt(k) > 100000.0d0) then
+          amoc_strength_target_depth_idx = k-1
+          exit
+        endif
+      enddo
+
+      !-------------------------------------------------------------------------
+      ! Get the index of southern the southern boundary of the AMOC
+      lat_aux_region_start = 0
+
+      do j = 1, ny_global
+        if (any(ATLANTIC_MASK_LAT_AUX(:,j) == 1)) then
+          lat_aux_region_start = j
+          exit
+        endif
+      enddo
+
+      WRITE(*,*) " Southern j-index of the AMOC region ", lat_aux_region_start
+    endif
+
+    !-----------------------------------------------------------------------
+    !EOC
+
+  end subroutine init_tavg_amoc
+
+!***********************************************************************
+!BOP
+! !IROUTINE: tavg_amoc_diags
+! !INTERFACE:
+
+  subroutine tavg_amoc_diags
+
+    ! !DESCRIPTION:
+    !
+    !  Compute atlantic meridional overturning circulation diagnostically from
+    !  other tavg quantities
+    !
+    !
+    ! !REVISION HISTORY:
+    !  same as module
+
+    !-----------------------------------------------------------------------
+    !
+    !  begin computations
+    !
+    !-----------------------------------------------------------------------
+
+    call compute_amoc ( TAVG_BUF_3D(:,:,:,:,tavg_loc_WVEL ),  &
+                        TAVG_BUF_3D(:,:,:,:,tavg_loc_VVEL ))
+
+    !-----------------------------------------------------------------------
+    !EOC
+  end subroutine tavg_amoc_diags
+
+!***********************************************************************
+!BOP
+! !IROUTINE: compute_amoc
+! !INTERFACE:
+  subroutine compute_amoc ( W_E, V_E )
+
+    ! !DESCRIPTION:
+    ! This subroutine computes atlantic meridional overturning circulation
+    !
+    ! !REVISION HISTORY:
+    !  same as module
+
+    ! !INPUT PARAMETERS:
+    !  input variables. the present design assumes that these are
+    !  time-averaged inputs from tavg.F.
+    !
+    real (r4), dimension(:,:,:,:), intent(in) ::  &
+      W_E,    &! Eulerian-mean vertical velocity component
+      V_E      ! Eulerian-mean velocity component in the grid-y direction
+
+!EOP
+!BOC
+    !-----------------------------------------------------------------------
+    !
+    !  local variables
+    !
+    !-----------------------------------------------------------------------
+    integer (int_kind) ::  &
+       i, j, k, n, iblock     ! loop indices
+
+    real (r8), dimension(km,1) ::  &
+       moc_s                  ! southern boundary values of moc
+
+    real (r8), dimension(:,:,:), allocatable ::  &
+       WORK1, WORK2           ! work arrays
+
+    real (r8), dimension(:,:,:), allocatable ::  &
+       WORK1_G                ! global work arrays
+
+    allocate ( WORK1(nx_block,ny_block,nblocks_clinic), &
+               WORK2(nx_block,ny_block,nblocks_clinic) )
+
+    allocate ( WORK1_G(nx_global,ny_global,km) )
+
+    ! Compute the w_e * area where there is ocean
+    do k = 1, km
+      !$OMP PARALLEL DO PRIVATE(iblock)
+      do iblock = 1,nblocks_clinic
+         WORK1(:,:,iblock) = merge(W_E(:,:,k,iblock)*TAREA(:,:,iblock), c0, k <= KMT(:,:,iblock))
+      enddo
+      !$OMP END PARALLEL DO
+      call gather_global (WORK1_G(:,:,k), WORK1, master_task,distrb_clinic)
+    enddo
+
+    if ( my_task == master_task )  then
+      ! Reset AMOC data
+      TAVG_MOC_G(:,:,1) = c0
+
+      ! Integrate in longitude, accumulating on latitudes
+      do n = 2, n_lat_aux_grid + 1
+        TAVG_MOC_G(n,:,1) = TAVG_MOC_G(n-1,:,1)
+        do j = 1, ny_global
+          do i = 1, nx_global
+            if ( TLATD_G(i,j) >= lat_aux_edge(n-1) .and.  &
+                 TLATD_G(i,j) <  lat_aux_edge(n  ) .and.  &
+                 ATLANTIC_MASK_LAT_AUX(i,j) == 1 ) then
+              do k = 1, km
+                TAVG_MOC_G(n,k,1) = TAVG_MOC_G(n,k,1) + WORK1_G(i,j,k)
+              enddo
+            endif
+          enddo
+        enddo
+      enddo
+    endif
+
+    ! Compute Tgrid y-velocity*dx by averaging 2 Ugrid points
+    do k = 1, km
+      !$OMP PARALLEL DO PRIVATE(iblock,i,j)
+      do iblock = 1, nblocks_clinic
+        WORK1(:,:,iblock) = p5 * V_E(:,:,k,iblock) * DXU(:,:,iblock)
+        do j=1,ny_block
+          do i=2,nx_block
+            WORK2(i,j,iblock) = WORK1(i-1,j,iblock)
+          enddo
+        enddo
+        WORK2(1,:,iblock) = c0
+        WORK1(:,:,iblock) = WORK1(:,:,iblock) + WORK2(:,:,iblock)
+      enddo ! iblock
+      !$OMP END PARALLEL DO
+      call gather_global (WORK1_G(:,:,k), WORK1, master_task,distrb_clinic)
+    enddo
+
+    if ( my_task == master_task )  then
+      moc_s = c0
+
+      ! Compute sourthern boundary integral of V_E
+      j = lat_aux_region_start
+      do i = 1, nx_global
+        if (ATLANTIC_MASK_LAT_AUX(i,j) == 1) then
+          do k = 1, km
+            moc_s(k,1) = moc_s(k,1) + WORK1_G(i,j,k)
+          enddo ! k
+        endif
+      enddo
+      moc_s(km,:) = - dz(km) * moc_s(km,:)
+      do k = km-1, 1, -1
+        moc_s(k,:) = moc_s(k+1,:) - dz(k) * moc_s(k,:)
+      enddo
+
+      ! Add sounthern boundary to MOC
+      do k = 1, km
+        do n = 1, n_lat_aux_grid+1
+          TAVG_MOC_G(n,k,1) = TAVG_MOC_G(n,k,1) + moc_s(k,1)
+        enddo
+      enddo
+
+     !-----------------------------------------------------------------------
+     !
+     !  convert MOC to Sverdrups, prior to masking
+     !
+     !-----------------------------------------------------------------------
+      TAVG_MOC_G = TAVG_MOC_G*1.0e-12_r8
+
+      amoc_strength = TAVG_MOC_G(amoc_strength_target_lat_idx,amoc_strength_target_depth_idx,1)
+
+      Write(*,*) "  "
+      Write(*,*) "==============================="
+      Write(*,*) "Strength idx :", amoc_strength_target_lat_idx, ", ", amoc_strength_target_depth_idx
+      Write(*,*) "AMOC strength : ", amoc_strength
+      Write(*,*) "==============================="
+      Write(*,*) "  "
+
+    endif ! master_task
+
+    deallocate ( WORK1, WORK2, WORK1_G )
+
+!-----------------------------------------------------------------------
+!EOC
+  end subroutine compute_amoc
+
+end module tavg
 !|||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||||
