@@ -55,10 +55,9 @@ module forcing_fields
       STF,  &!  surface tracer fluxes
       TFW    ! tracer content in freshwater flux
 
-   real (r8), public :: stf_stoich_ampl = 0.0
-   real (r8), dimension(nx_block,ny_block,nt,max_blocks_clinic), &
-      public, target :: &
-      STF_stoich  ! Stoichastic surface tracer fluxes
+  real (r8), dimension(nx_block,ny_block,2,max_blocks_clinic), &
+     public, target :: &
+     STF_stoich  ! Stoichastic surface tracer fluxes
 
    logical (log_kind), public :: &
       lsmft_avail   ! true if SMFT is an available field

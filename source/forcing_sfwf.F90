@@ -295,7 +295,6 @@ end subroutine read_sfwf_namelist
 !
 ! !REVISION HISTORY:
 !  same as module
-   use forcing_fields, only: STF_stoich
 
   implicit none
 
@@ -534,7 +533,6 @@ end subroutine read_sfwf_namelist
    case ('none')
 
      STF(:,:,2,:) = c0
-     STF_stoich(:,:,2,:) = c0
      sfwf_data_next = never
      sfwf_data_update = never
      sfwf_interp_freq = 'never'
@@ -1146,7 +1144,7 @@ end subroutine read_sfwf_namelist
 ! !REVISION HISTORY:
 !  same as module
 
-   use forcing_fields, only: STF_stoich, stf_stoich_ampl
+   use forcing_stoich, only: append_stoich_forcing_sfwf
 
    implicit none
 
@@ -1348,129 +1346,15 @@ end subroutine read_sfwf_namelist
 
    end select
 
-   ! Set the stoicastic freshwater forcing
-   ! 1. Mask STF on northern atlantic
-   ! 2. Compute mean of masked STF
-   ! 3. STF_stoich = stoich_ampl * (STF_m - \int(STF_m))
-   ! 4. STF += STF_stoich
-   if ( stf_stoich_ampl /= 0.0 ) then
-     call calc_stoichastic_sfwf(STF, STF_stoich, stf_stoich_ampl)
-
-     ! Add stoichastic forcing to baseline forcing
-     !$OMP PARALLEL DO PRIVATE(iblock)
-     do iblock = 1, nblocks_clinic
-        STF(:,:,2,iblock) = STF(:,:,2,iblock) + STF_stoich(:,:,2,iblock)
-     enddo
-     !$OMP END PARALLEL DO
-   endif
+   ! Compute and add stoichastic component
+   ! to freshwater surface forcing
+   call append_stoich_forcing_sfwf(STF)
 
 !-----------------------------------------------------------------------
 !EOC
 
  end subroutine set_sfwf
 
- subroutine calc_stoichastic_sfwf(STF, STF_stoich, stf_stoich_ampl)
-
-! !DESCRIPTION:
-! Used to add stochastic forcing in the northern atlantic ocean
-! as a fraction of the baseline forcing value in that region. The
-! net addition of forcing should be zero, such that the mean forcing
-! is removed.
-!
-!  Notes:
-
-   implicit none
-
-! !INPUT PARAMETERS:
-
-   real (r8), intent(in) ::  &
-      stf_stoich_ampl   ! Stoichastic forcing amplitude
-
-! !INPUT/OUTPUT PARAMETERS:
-
-   real (r8), dimension(nx_block,ny_block,nt,max_blocks_clinic), &
-      intent(inout) :: &
-      STF     ! surface tracer fluxes for all tracers
-
-! !OUTPUT PARAMETERS:
-
-   real (r8), dimension(nx_block,ny_block,nt,max_blocks_clinic), &
-      intent(out) :: &
-      STF_stoich   ! stochastic surface tracer fluxes for all tracers
-
-   type(block) :: &
-      this_block  ! block info for current block
-
-   integer (int_kind) :: &
-      ierr,&              ! MPI calls error flag
-      i ,j,&              ! cell loop indices
-      iblock              ! block loop index
-
-   real (r8) :: &
-      stf_int_lcl,&       ! Integral of FWF (local)
-      stf_int,&           ! Integral of FWF (global)
-      surf_lcl,&          ! Covered surface (local)
-      surf                ! Covered surface (global)
-
-
-   ! Compute the integral of the STF term and surface
-   ! of the controlled area (area converted from cm^2 to km^2).
-   stf_int_lcl = 0.0
-   surf_lcl = 0.0
-
-   !$OMP PARALLEL DO PRIVATE(iblock, this_block)
-   do iblock = 1, nblocks_clinic
-      this_block = get_block(blocks_clinic(iblock),iblock)
-
-      do j=this_block%jb,this_block%je
-         do i=this_block%ib,this_block%ie
-            if (KMT(i,j,iblock) > 0 .and. &
-               TLAT(i,j,iblock) >= 0.26179939 .and. &
-               TLAT(i,j,iblock) <= 1.22173048 .and. &
-               TLON(i,j,iblock) >= 4.53785606)  then
-               STF_stoich(i,j,2,iblock) = STF(i,j,2,iblock)
-               stf_int_lcl = stf_int_lcl + TAREA(i,j,iblock) * 1.0e-10_POP_r8 * STF_stoich(i,j,2,iblock)
-               surf_lcl = surf_lcl + TAREA(i,j,iblock) * 1.0e-10_POP_r8
-            else
-               STF_stoich(i,j,2,iblock) = c0
-            endif
-         enddo
-      enddo
-   enddo
-   !$OMP END PARALLEL DO
-
-   stf_int = global_sum(stf_int_lcl, distrb_clinic)
-   !write(*,*) " >> Integral of stoich SFWF before correction: ", stf_int
-   surf = global_sum(surf_lcl, distrb_clinic)
-   !write(*,*) " >> Surface covered by stoich SFWF: ", surf
-   stf_int = stf_int / surf
-   !write(*,*) " >> Mean stoich SFWF: ", stf_int
-
-   stf_int_lcl = 0.0
-   !$OMP PARALLEL DO PRIVATE(iblock, this_block)
-   do iblock = 1, nblocks_clinic
-      this_block = get_block(blocks_clinic(iblock),iblock)
-
-      do j=this_block%jb,this_block%je
-         do i=this_block%ib,this_block%ie
-            if (KMT(i,j,iblock) > 0 .and. &
-               TLAT(i,j,iblock) >= 0.26179939 .and. &
-               TLAT(i,j,iblock) <= 1.22173048 .and. &
-               TLON(i,j,iblock) >= 4.53785606)  then
-               STF_stoich(i,j,2,iblock) = stf_stoich_ampl * (STF_stoich(i,j,2,iblock) - stf_int)
-               stf_int_lcl = stf_int_lcl + TAREA(i,j,iblock) * 1.0e-10_POP_r8 * STF_stoich(i,j,2,iblock)
-            else
-               STF_stoich(i,j,2,iblock) = c0
-            endif
-         enddo
-      enddo
-   enddo
-   !$OMP END PARALLEL DO
-
-   stf_int = global_sum(stf_int_lcl, distrb_clinic)
-   !write(*,*) " >> Integral of stoich SFWF after correction and scaling: ", stf_int
-
- end subroutine calc_stoichastic_sfwf
 
 !***********************************************************************
 !BOP
