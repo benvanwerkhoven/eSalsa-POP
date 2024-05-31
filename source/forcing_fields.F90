@@ -57,7 +57,7 @@ module forcing_fields
 
   real (r8), dimension(nx_block,ny_block,2,max_blocks_clinic), &
      public, target :: &
-     STF_stoich  ! Stoichastic surface tracer fluxes
+     STF_stoch  ! Stochastic surface tracer fluxes
 
    logical (log_kind), public :: &
       lsmft_avail   ! true if SMFT is an available field

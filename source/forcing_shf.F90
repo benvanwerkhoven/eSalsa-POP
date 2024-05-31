@@ -1613,7 +1613,7 @@ end subroutine read_shf_namelist
 ! !REVISION HISTORY:
 !  same as module
 
-   use forcing_stoich, only: append_stoich_forcing_shf
+   use forcing_stoch, only: append_stoch_forcing_shf
 
    implicit none
 
@@ -1803,9 +1803,9 @@ end subroutine read_shf_namelist
 
    end select    ! shf_data_type
 
-   ! Compute and add stoichastic component
+   ! Compute and add stochastic component
    ! to heat surface forcing
-   call append_stoich_forcing_shf(STF)
+   call append_stoch_forcing_shf(STF)
 
 
 !-----------------------------------------------------------------------

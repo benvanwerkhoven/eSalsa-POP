@@ -28,7 +28,7 @@
    use forcing_pt_interior
    use forcing_s_interior
    use forcing_ap
-   use forcing_stoich
+   use forcing_stoch
    use forcing_coupled, only: set_combined_forcing, tavg_coupled_forcing,  &
        liceform
    use forcing_tools
@@ -98,7 +98,7 @@ subroutine read_forcing_namelist
    call read_pt_interior_namelist
    call read_s_interior_namelist
    call read_ap_namelist
-   call read_stoich_forcing_namelist
+   call read_stoch_forcing_namelist
 
 end subroutine read_forcing_namelist
 
@@ -145,7 +145,7 @@ end subroutine read_forcing_namelist
    SMFT       = c0
    STF        = c0
    TFW        = c0
-   STF_stoich = c0
+   STF_stoch = c0
 
 !-----------------------------------------------------------------------
 !
@@ -163,7 +163,7 @@ end subroutine read_forcing_namelist
    call init_pt_interior
    call init_s_interior
    call init_ap(ATM_PRESS)
-   call init_stoich_forcing(STF_stoich)
+   call init_stoch_forcing(STF_stoch)
 
 !-----------------------------------------------------------------------
 !

@@ -217,8 +217,8 @@ subroutine read_sfwf_namelist
    sfwf_formulation       = 'restoring'
    sfwf_data_type         = 'analytic'
    sfwf_data_inc          = 1.e20_r8
-   sfwf_interp_type       = 'nearest'
    sfwf_interp_freq       = 'never'
+   sfwf_interp_type       = 'nearest'
    sfwf_interp_inc        = 1.e20_r8
    sfwf_restore_tau       = 1.e20_r8
    sfwf_filename          = 'unknown-sfwf'
@@ -248,7 +248,6 @@ subroutine read_sfwf_namelist
       end do
       if (nml_error == 0) close(nml_in)
    endif
-
 
    call broadcast_scalar(nml_error, master_task)
    if (nml_error /= 0) then
@@ -1144,7 +1143,7 @@ end subroutine read_sfwf_namelist
 ! !REVISION HISTORY:
 !  same as module
 
-   use forcing_stoich, only: append_stoich_forcing_sfwf
+   use forcing_stoch, only: append_stoch_forcing_sfwf
 
    implicit none
 
@@ -1346,9 +1345,9 @@ end subroutine read_sfwf_namelist
 
    end select
 
-   ! Compute and add stoichastic component
+   ! Compute and add stochastic component
    ! to freshwater surface forcing
-   call append_stoich_forcing_sfwf(STF)
+   call append_stoch_forcing_sfwf(STF)
 
 !-----------------------------------------------------------------------
 !EOC

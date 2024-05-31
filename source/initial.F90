@@ -464,6 +464,7 @@ end subroutine pop_init_phase0
 !       o init_pt_interior
 !       o init_s_interior
 !       o init_ap
+!       o init_stoch
 !
 !-----------------------------------------------------------------------
 
