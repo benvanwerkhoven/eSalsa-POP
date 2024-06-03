@@ -361,6 +361,7 @@
 
    ! local variables
    real(r8), dimension(:,:), allocatable :: eof_gbl
+   real(r8), dimension(:,:), allocatable :: eof_gbl_flipped
 
    character (char_len) :: &
       path            ! filename to read
@@ -374,7 +375,7 @@
       ncid,         &! netCDF file id
       grpid,        &! netCDF group id
       dimid,        &! netCDF dimension id
-      ndim, nvar,natt,k_un, k_form, k, xtype, e, &
+      ndim, nvar,natt,k_un, k_form, k, xtype, e, i,j, &
       numgrps,      &! number of groups
       nsize,        &! size parameter returned by inquire function
       n,            &! loop index
@@ -402,6 +403,7 @@
 
    if (my_task == master_task) then
      allocate(eof_gbl(nx_global,ny_global))
+     allocate(eof_gbl_flipped(ny_global,nx_global))
    endif
 
 !-----------------------------------------------------------------------
@@ -457,27 +459,37 @@
      enddo
 
      allocate(dimids(1:ndim))
-     do k = 1, nvar
+   endif
+
+   call broadcast_scalar(nvar, master_task)
+
+   do k = 1, nvar
+     if (my_task == master_task) then
        iostat = nf90_inquire_variable(ncid, k, att_name, xtype, ndim, dimids, natt )
-       if (trim(att_name) /= "eof") then
-         cycle
+     endif
+     do e = 1, eof_l
+       if (my_task == master_task) then
+         iostat = nf90_get_var(ncid, k, eof_gbl_flipped, start=(/ 1,1,e /), count=(/ny_global,nx_global,1/))
+         do i = 1, ny_global
+           do j = 1, nx_global
+             eof_gbl(j,i) = eof_gbl_flipped(i,j)
+           enddo
+         enddo
        endif
-       do e = 1, eof_l
-         iostat = nf90_get_var(ncid, k, eof_gbl, start=(/ 1,1,e /), count=(/nx_global,ny_global,1/))
-         if (iostat /= nf90_noerr) then
-           write(*,*) "Error while loading EOF data "
-           exit
-         else
-           call scatter_global(eof(:,:,:,e), &
-                               eof_gbl, master_task, distrb_clinic, &
-                               field_loc_center, field_type_scalar)
-         endif
-       enddo
+       call broadcast_scalar(iostat, master_task)
+
        if (iostat /= nf90_noerr) then
+         if (my_task == master_task) then
+           write(*,*) "Error while loading EOF data "
+         endif
          exit
+       else
+         call scatter_global(eof(:,:,:,e), &
+                             eof_gbl, master_task, distrb_clinic, &
+                             field_loc_center, field_type_scalar)
        endif
      enddo
-   endif
+   enddo
 
    call broadcast_scalar(iostat, master_task)
    if (iostat /= nf90_noerr) &
@@ -485,7 +497,7 @@
                     'error while reading EOF data file')
 
    if (my_task == master_task) then
-     deallocate(eof_gbl)
+     deallocate(eof_gbl,eof_gbl_flipped)
    endif
 
  end subroutine read_EOF_netcdf_file
