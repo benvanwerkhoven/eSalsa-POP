@@ -64,9 +64,13 @@ module forcing_stoch
   ! Monthly forcing data
   ! Keep around 2 randomly generated monthly forcing fields
   ! to interpolate from linearly
-  real (r8), allocatable, dimension(:,:,:) :: &
+  real (r8), allocatable, dimension(:,:,:,:) :: &
     stoch_data_ep,             &
     stoch_data_t2m
+
+  real(r8), allocatable, dimension(:) :: &
+    rnd_ep,                     &! Latest set of random number for E-P
+    rnd_t2m                      ! Latest set of random number for T
 
   logical :: stochastic_forcing_fwf
   logical :: stochastic_forcing_hf
@@ -168,10 +172,10 @@ contains
 
         allocate(lags_ep(1:n_eof_ep))
         allocate(sig_ep(1:n_eof_ep))
-        !allocate(rho_ep(1:n_eof_ep,1:lag_max_ep))
-        !allocate(hist_ep(1:n_eof_ep,1:lag_max_ep))
         allocate(rho_ep(1:lag_max_ep,1:n_eof_ep))
         allocate(hist_ep(1:lag_max_ep,1:n_eof_ep))
+
+        allocate(rnd_ep(1:n_eof_ep))
 
         call read_AR_netcdf_file_data(ARfile,"ep",n_eof_ep,lag_max_ep,&
                                       lags_ep, sig_ep, rho_ep, hist_ep)
@@ -182,6 +186,8 @@ contains
                                 full_name=trim(EOF_ep_filename))
 
         call read_EOF_netcdf_file(EOFfile, n_eof_ep, eof_ep)
+
+        allocate(stoch_data_ep(nx_block,ny_block,max_blocks_clinic,2))
       end select
     endif
 
@@ -198,8 +204,10 @@ contains
 
         allocate(lags_t2m(1:n_eof_t2m))
         allocate(sig_t2m(1:n_eof_t2m))
-        allocate(rho_t2m(1:lag_max_ep,1:n_eof_ep))
-        allocate(hist_t2m(1:lag_max_ep,1:n_eof_ep))
+        allocate(rho_t2m(1:lag_max_t2m,1:n_eof_t2m))
+        allocate(hist_t2m(1:lag_max_t2m,1:n_eof_t2m))
+
+        allocate(rnd_t2m(1:n_eof_t2m))
 
         call read_AR_netcdf_file_data(ARfile,"t2m",n_eof_t2m,lag_max_t2m,&
                                       lags_t2m, sig_t2m, rho_t2m, hist_t2m)
@@ -211,16 +219,12 @@ contains
 
         call read_EOF_netcdf_file(EOFfile, n_eof_t2m, eof_t2m)
         
+        allocate(stoch_data_t2m(nx_block,ny_block,max_blocks_clinic,2))
+
       end select
     endif
 
   end subroutine init_stoch_forcing
-
-  subroutine read_netCDF_ARdata()
-
-    implicit none
-
-  end subroutine read_netCDF_ARdata
 
   subroutine append_stoch_forcing_sfwf(STF)
 
@@ -242,15 +246,18 @@ contains
       return
     endif
 
-   ! Compute the stoicastic freshwater forcing
-   call calc_stochastic_sfwf(STF, STF_stoch)
+    ! Compute a new random monthly field if needed
+    call update_stoch_forcing_data_fwf()
 
-   ! Add stochastic forcing to baseline forcing
-   !$OMP PARALLEL DO PRIVATE(iblock)
-   do iblock = 1, nblocks_clinic
-      STF(:,:,2,iblock) = STF(:,:,2,iblock) + STF_stoch(:,:,2,iblock)
-   enddo
-   !$OMP END PARALLEL DO
+    ! Compute the stoicastic freshwater forcing
+    call calc_stochastic_sfwf(STF, STF_stoch)
+
+    ! Add stochastic forcing to baseline forcing
+    !$OMP PARALLEL DO PRIVATE(iblock)
+    do iblock = 1, nblocks_clinic
+       STF(:,:,2,iblock) = STF(:,:,2,iblock) + STF_stoch(:,:,2,iblock)
+    enddo
+    !$OMP END PARALLEL DO
 
   end subroutine append_stoch_forcing_sfwf
 
@@ -285,6 +292,10 @@ contains
    !$OMP END PARALLEL DO
 
   end subroutine append_stoch_forcing_shf
+
+  subroutine update_stoch_forcing_data_fwf()
+    implicit none
+  end subroutine update_stoch_forcing_data_fwf
 
   subroutine calc_stochastic_sfwf(STF, STF_stoch)
     ! !DESCRIPTION:
