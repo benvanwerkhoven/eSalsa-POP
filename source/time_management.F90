@@ -312,6 +312,7 @@
 
    real (r8), dimension(12)  :: &
       thour00_midmonth_calendar,&! num hours to middle of calendar month
+      thour00_begmonth_calendar,&! num hours to beginning of calendar month
       thour00_endmonth_calendar,&! num hours to end of calendar month
       thour00_midmonth_equal   ,&! num hours to middle of equal-spaced month
       thour00_endmonth_equal     ! num hours to end of equal-spaced month
@@ -1297,6 +1298,7 @@ subroutine init_time1
    thour00_begin_this_year = thour00 - &
                              (seconds_this_year/seconds_in_hour)
 
+   thour00_begmonth_calendar(1) = 0.0_r8
    thour00_midmonth_calendar(1) = 24.0_r8*p5*days_in_month(1)
    thour00_endmonth_calendar(1) = 24.0_r8*days_in_month(1)
 
@@ -1305,6 +1307,8 @@ subroutine init_time1
 
    do nm = 2,12
 
+      thour00_begmonth_calendar(nm) = thour00_begmonth_calendar(nm-1) &
+                                    + 24.0_r8*days_in_month(nm-1)
       thour00_endmonth_calendar(nm) = thour00_endmonth_calendar(nm-1) &
                                     + 24.0_r8*days_in_month(nm)
       thour00_midmonth_calendar(nm) = thour00_endmonth_calendar(nm-1) &
