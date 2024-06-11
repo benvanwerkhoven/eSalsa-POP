@@ -21,6 +21,7 @@ module forcing_stoch
   use io
   use grid
   use io_netcdf_stoch
+  use time_management
   use global_reductions, only:global_sum
   use exit_mod
 
@@ -50,7 +51,7 @@ module forcing_stoch
     rho_t2m                      ! Decay coefficient for T
 
   ! History data
-  ! AR requires historical data up to lag(i) for i in n_eof 
+  ! AR requires historical data up to lag(i) for i in n_eof
   real (r8), allocatable, dimension(:,:) :: &
     hist_ep,                    &! Forcing history for E-P (n_eof * l_max)
     hist_t2m                     ! Forcing history for T
@@ -64,9 +65,31 @@ module forcing_stoch
   ! Monthly forcing data
   ! Keep around 2 randomly generated monthly forcing fields
   ! to interpolate from linearly
+  ! "old": beginning of the current month
+  ! "new": beginning of next month
   real (r8), allocatable, dimension(:,:,:,:) :: &
     stoch_data_ep,             &
     stoch_data_t2m
+
+  ! Timing data for updating stochastic fields
+  real (r8), dimension(1:12) :: &
+    sf_fwf_time,                &
+    sf_hf_time
+  character (char_len) ::       &
+    sf_fwf_interp_type,         &
+    sf_hf_interp_type
+  character (char_len) ::       &
+    sf_fwf_data_type,           &
+    sf_hf_data_type
+  real (r8) ::                  &
+    sf_fwf_data_update,         &
+    sf_hf_data_update
+  real (r8) ::                  &
+    sf_fwf_forcing_update,      &
+    sf_hf_forcing_update
+  integer (int_kind) ::         &
+    sf_fwf_data_update_idx,     &
+    sf_hf_data_update_idx
 
   real(r8), allocatable, dimension(:) :: &
     rnd_ep,                     &! Latest set of random number for E-P
@@ -147,6 +170,9 @@ contains
        STF_stoch! surface tracer fluxes for all tracers
 
     ! LOCAL
+    real(r8), dimension(:), allocatable :: rnd_u1, rnd_u2
+    integer (int_kind) :: seed_l
+    integer (int_kind), dimension(:), allocatable:: rnd_seed
     type (datafile) :: ARfile, EOFfile
 
     ! Set forcing to zero
@@ -157,7 +183,6 @@ contains
         .not. stochastic_forcing_hf ) then
       return
     endif
-
 
     if (stochastic_forcing_fwf) then
       select case (sf_fwf_formulation)
@@ -178,7 +203,7 @@ contains
         allocate(rnd_ep(1:n_eof_ep))
 
         call read_AR_netcdf_file_data(ARfile,"ep",n_eof_ep,lag_max_ep,&
-                                      lags_ep, sig_ep, rho_ep, hist_ep)
+                                      lags_ep, sig_ep, rho_ep, hist_ep, rnd_ep)
 
         allocate(eof_ep(nx_block,ny_block,max_blocks_clinic,n_eof_ep))
 
@@ -188,6 +213,27 @@ contains
         call read_EOF_netcdf_file(EOFfile, n_eof_ep, eof_ep)
 
         allocate(stoch_data_ep(nx_block,ny_block,max_blocks_clinic,2))
+        stoch_data_ep(:,:,:,:) = 0.0
+
+        ! Find time to update the stochastic fields
+        ! Hard-coded types for now.
+        sf_fwf_time(1:12) = 0.0                 !
+        sf_fwf_interp_type = "linear"           ! Interpolation type (between 2 EOFs-based fields)
+        sf_fwf_data_type = "monthly-calendar"   ! Working with monthly data here
+        sf_fwf_data_update = 0.0                ! Next time a new EOFs-based field is needed
+        sf_fwf_forcing_update = 0.0             ! Next time forcing need update
+
+        ! Light version of the content of the find_forcing_times subroutine
+        call find_stoch_forcing_times(sf_fwf_time, sf_fwf_forcing_update, sf_fwf_data_update, &
+                                      sf_fwf_data_update_idx)
+
+        ! Generate a forcing for current month (old)
+        call generate_new_forcing(n_eof_ep, lag_max_ep, 1, rnd_ep, hist_ep, &
+                                  lags_ep, rho_ep, sig_ep, eof_ep, stoch_data_ep)
+
+        ! Generate a forcing for next month (new), using new set of random numbers
+        call generate_new_forcing(n_eof_ep, lag_max_ep, 0, rnd_ep, hist_ep, &
+                                  lags_ep, rho_ep, sig_ep, eof_ep, stoch_data_ep)
       end select
     endif
 
@@ -202,15 +248,18 @@ contains
                                 full_name=trim(ARdata_t_filename))
         call read_AR_netcdf_file_header(ARfile,"t2m",n_eof_t2m,lag_max_t2m)
 
+        if (my_task == master_task) then
+          write(*,*) n_eof_t2m, lag_max_t2m
+        endif
+
         allocate(lags_t2m(1:n_eof_t2m))
         allocate(sig_t2m(1:n_eof_t2m))
         allocate(rho_t2m(1:lag_max_t2m,1:n_eof_t2m))
         allocate(hist_t2m(1:lag_max_t2m,1:n_eof_t2m))
-
         allocate(rnd_t2m(1:n_eof_t2m))
 
         call read_AR_netcdf_file_data(ARfile,"t2m",n_eof_t2m,lag_max_t2m,&
-                                      lags_t2m, sig_t2m, rho_t2m, hist_t2m)
+                                      lags_t2m, sig_t2m, rho_t2m, hist_t2m, rnd_t2m)
 
         allocate(eof_t2m(nx_block,ny_block,max_blocks_clinic,n_eof_t2m))
 
@@ -218,9 +267,29 @@ contains
                                 full_name=trim(EOF_t_filename))
 
         call read_EOF_netcdf_file(EOFfile, n_eof_t2m, eof_t2m)
-        
-        allocate(stoch_data_t2m(nx_block,ny_block,max_blocks_clinic,2))
 
+        allocate(stoch_data_t2m(nx_block,ny_block,max_blocks_clinic,2))
+        stoch_data_t2m(:,:,:,:) = 0.0
+
+        ! Find time to update the stochastic fields
+        ! Hard-coded types for now.
+        sf_hf_time(1:12) = 0.0                 !
+        sf_hf_interp_type = "linear"           ! Interpolation type (between 2 EOFs-based fields)
+        sf_hf_data_type = "monthly-calendar"   ! Working with monthly data here
+        sf_hf_data_update = 0.0                ! Next time a new EOFs-based field is needed
+        sf_hf_forcing_update = 0.0             ! Next time forcing need update
+
+        ! Light version of the content of the find_forcing_times subroutine
+        call find_stoch_forcing_times(sf_hf_time, sf_hf_forcing_update, sf_hf_data_update, &
+                                      sf_hf_data_update_idx)
+
+        ! Generate a forcing for current month (old)
+        call generate_new_forcing(n_eof_t2m, lag_max_t2m, 1, rnd_t2m, hist_t2m, &
+                                  lags_t2m, rho_t2m, sig_t2m, eof_t2m, stoch_data_t2m)
+
+        ! Generate a forcing for next month (new), using new set of random numbers
+        call generate_new_forcing(n_eof_t2m, lag_max_t2m, 0, rnd_t2m, hist_t2m, &
+                                  lags_t2m, rho_ep, sig_t2m, eof_t2m, stoch_data_t2m)
       end select
     endif
 
@@ -245,9 +314,6 @@ contains
     if (.not. stochastic_forcing_fwf) then
       return
     endif
-
-    ! Compute a new random monthly field if needed
-    call update_stoch_forcing_data_fwf()
 
     ! Compute the stoicastic freshwater forcing
     call calc_stochastic_sfwf(STF, STF_stoch)
@@ -285,17 +351,13 @@ contains
    call calc_stochastic_shf(STF, STF_stoch)
 
    ! Add stochastic forcing to baseline forcing
-   !$OMP PARALLEL DO PRIVATE(iblock)
-   do iblock = 1, nblocks_clinic
-      STF(:,:,1,iblock) = STF(:,:,1,iblock) + STF_stoch(:,:,1,iblock)
-   enddo
-   !$OMP END PARALLEL DO
+   !!$OMP PARALLEL DO PRIVATE(iblock)
+   !do iblock = 1, nblocks_clinic
+   !   STF(:,:,1,iblock) = STF(:,:,1,iblock) + STF_stoch(:,:,1,iblock)
+   !enddo
+   !!$OMP END PARALLEL DO
 
   end subroutine append_stoch_forcing_shf
-
-  subroutine update_stoch_forcing_data_fwf()
-    implicit none
-  end subroutine update_stoch_forcing_data_fwf
 
   subroutine calc_stochastic_sfwf(STF, STF_stoch)
     ! !DESCRIPTION:
@@ -332,6 +394,8 @@ contains
        stf_int,&           ! Integral of FWF (global)
        surf_lcl,&          ! Covered surface (local)
        surf                ! Covered surface (global)
+
+    real (r8) :: pold, pnew! Interpolation coefficients for ERA5-Data forcing
 
     select case (sf_fwf_formulation)
     case ('baseline-frac')
@@ -396,13 +460,37 @@ contains
       !$OMP END PARALLEL DO
 
       stf_int = global_sum(stf_int_lcl, distrb_clinic)
-      !write(*,*) " >> Integral of stoch SFWF after correction and scaling: ", stf_int
 
     case ('ERA5-Data')
+      ! Check if a new random field has to be generated
+      if (thour00 >= sf_fwf_data_update) then
+        ! Generate a forcing field from current data
+        call generate_new_forcing(n_eof_ep, lag_max_ep, 0, rnd_ep, hist_ep, &
+                                  lags_ep, rho_ep, sig_ep, eof_ep, stoch_data_ep)
 
-       do iblock = 1, nblocks_clinic
-         STF_stoch(:,:,2,iblock) = eof_ep(:,:,iblock,1)*salinity_factor ! kg/s/m^2
-       end do
+        ! Udpate the time management
+        sf_fwf_data_update_idx = mod(imonth+1,12)
+        if (sf_fwf_data_update_idx == 0) sf_fwf_data_update_idx = 12
+
+        if (imonth == 12 .AND. sf_fwf_time(1) < thour00) then
+          sf_fwf_time(:) = sf_fwf_time(:) + hours_in_year
+        endif
+
+        sf_fwf_data_update = sf_fwf_time(sf_fwf_data_update_idx)
+      endif
+
+      ! Linear interpolation between an 'old' and 'new' monthly random fields.
+      call get_linear_coeff(sf_fwf_time, pold, pnew)
+
+      ! Conversion: stoch data from EOFs in m/s. -> convert to kg/s/m^2
+      ! then to salf flux (CGS) msu*cm/s
+      ! using water density rho_fw
+      do iblock = 1, nblocks_clinic
+        STF_stoch(:,:,2,iblock) =  (pold * stoch_data_ep(:,:,iblock,2) + &
+                                    pnew * stoch_data_ep(:,:,iblock,1)) * &
+                                    1.0e3_r8 / rho_fw  * & ! kg/s/m^2
+                                    salinity_factor        ! msu*cm/s
+      end do
     end select
 
   end subroutine calc_stochastic_sfwf
@@ -432,12 +520,204 @@ contains
     integer (int_kind) :: &
        iblock              ! block loop index
 
-    !$OMP PARALLEL DO PRIVATE(iblock)
-    do iblock = 1, nblocks_clinic
-       STF_stoch(:,:,1,iblock) = c0
-    end do
-    !$OMP END PARALLEL DO
+    real (r8) :: pold, pnew! Interpolation coefficients for ERA5-Data forcing
+
+    select case (sf_fwf_formulation)
+    case ('ERA5-Data')
+      ! Check if a new random field has to be generated
+      if (thour00 >= sf_hf_data_update) then
+        ! Generate a forcing field from current data
+        call generate_new_forcing(n_eof_t2m, lag_max_t2m, 0, rnd_t2m, hist_t2m, &
+                                  lags_t2m, rho_t2m, sig_t2m, eof_t2m, stoch_data_t2m)
+
+        ! Udpate the time management
+        sf_hf_data_update_idx = mod(imonth+1,12)
+        if (sf_hf_data_update_idx == 0) sf_hf_data_update_idx = 12
+
+        if (imonth == 12 .AND. sf_hf_time(1) < thour00) then
+          sf_hf_time(:) = sf_hf_time(:) + hours_in_year
+        endif
+
+        sf_hf_data_update = sf_hf_time(sf_hf_data_update_idx)
+      endif
+
+      ! Linear interpolation between an 'old' and 'new' monthly random fields.
+      call get_linear_coeff(sf_hf_time, pold, pnew)
+
+      ! Conversion: stoch data from EOFs in K to flux.
+      do iblock = 1, nblocks_clinic
+        STF_stoch(:,:,1,iblock) =  (pold * stoch_data_t2m(:,:,iblock,2) + &
+                                    pnew * stoch_data_t2m(:,:,iblock,1))
+      end do
+    end select
 
   end subroutine calc_stochastic_shf
+
+  subroutine find_stoch_forcing_times(forcing_time, sf_forcing_time_next, sf_data_update, &
+                                      sf_data_update_idx)
+
+    ! Always assume stochastic forcing work with calendar month + linear interpolation
+
+    implicit none
+
+    ! INOUT
+    real (r8), dimension(1:12), intent(inout) :: &
+      forcing_time
+
+    ! OUT
+    real (r8), intent(out) :: &
+      sf_forcing_time_next, sf_data_update
+    integer (int_kind), intent(out) :: &
+      sf_data_update_idx
+
+    ! LOCAL
+    integer (int_kind) :: &
+      n, month_minloc, second
+
+    forcing_time(:) = thour00_begin_this_year + thour00_begmonth_calendar(:)
+    do n = 1, 12
+      if (forcing_time(n) > thour00) exit
+    enddo
+
+    month_minloc = n - 1
+    month_minloc = mod(month_minloc,12)
+    if (month_minloc <= 0 ) then
+      month_minloc = month_minloc + 12
+    endif
+
+    second = mod(month_minloc+1,12)
+    if (second == 0) second = 12
+
+    sf_forcing_time_next = forcing_time(second+1)
+
+    sf_data_update = forcing_time(second)
+
+  end subroutine find_stoch_forcing_times
+
+  subroutine generate_new_forcing(eof_l, lag_l, offset, &
+                                  new_rnd_set, rnd_hist, lags, &
+                                  rho, sigma, eofs, stoch_fields)
+
+    implicit none
+
+    ! IN
+    integer (int_kind), intent(in) :: &
+      eof_l,                          & ! Number of EOFs to assemble
+      lag_l,                          & ! Lag of each EOF
+      offset                            ! Offset
+
+    real (r8), dimension(eof_l), intent(in) :: &
+      new_rnd_set                       ! New set of random number (N(0,1)) to use and add to history
+
+    integer (int_kind), dimension(eof_l), intent(in) :: &
+      lags                              ! Lag of each EOF
+    real (r8), dimension(lag_l, eof_l), intent(in) :: &
+      rho                               ! Weight of each EOFs for each lag time in AR
+    real (r8), dimension(eof_l), intent(in) :: &
+      sigma                             ! Scaling factor applied on random process for each EOFs
+    real (r8), dimension(nx_block,ny_block,max_blocks_clinic,eof_l), intent(in) :: &
+      eofs                              ! EOFs obtained from PCA, ...
+
+    ! INOUT
+    real (r8), dimension(lag_l, eof_l), intent(inout) :: &
+      rnd_hist                          ! Random number history, included in AR
+    real (r8), dimension(nx_block,ny_block,max_blocks_clinic,2), intent(inout) :: &
+      stoch_fields                      ! Final stochastic fields
+
+    ! LOCAL
+    integer (int_kind) :: &
+      i_eof, i_lag
+
+    ! stoch_fields contains an 'old (2)' and a 'new (1)' fields.
+    ! Move new into old
+    stoch_fields(:,:,:,2) = stoch_fields(:,:,:,1)
+
+    ! Reinit new field
+    stoch_fields(:,:,:,1) = 0.0
+
+    ! If we have an offset, no need to regenerate a set of data,
+    ! we are using an older set in the history
+    if (offset == 0) then
+      ! Add to history using AR and the new set of random
+      ! Placing the new data at the end to easily access the beginning
+      ! with a sum
+      do i_eof = 1, eof_l
+        rnd_hist(lag_l,i_eof) =  sum(rnd_hist(1:lags(i_eof),i_eof)*rho(1:lags(i_eof),i_eof)) &
+                               + sigma(i_eof) * new_rnd_set(i_eof)
+      enddo
+
+      ! Then roll the history data in the lag direction so that our newly computed
+      ! data is now at the front
+      rnd_hist = Cshift(rnd_hist,-1,1)
+    endif
+
+    ! Assemble new field from EOFs and weights stored in history
+    do i_eof = 1, eof_l
+      stoch_fields(:,:,:,1) = stoch_fields(:,:,:,1) + eofs(:,:,:,i_eof) * rnd_hist(1+offset,i_eof)
+    enddo
+
+  end subroutine generate_new_forcing
+
+  subroutine get_linear_coeff(sf_time, pold, pnew)
+
+    implicit none
+
+    ! IN
+    real (r8), dimension(1:12), intent(in) :: sf_time
+
+    ! OUT
+    real (r8), intent(out) :: pold, pnew
+
+    ! LOCAL
+    real (r8) :: t_old, t_new           ! Old and new time in hour
+    integer (int_kind) :: m_old, m_new  ! Old and new month idx
+
+    m_old = imonth
+    m_new = mod(m_old + 1, 12)
+    if (m_new <= 0) m_new = m_new + 12
+
+    t_old = sf_time(m_old)
+    t_new = sf_time(m_new)
+
+    ! sf_time was already update in Dec.
+    ! Flip back to a year earlier.
+    if (imonth == 12) then
+      t_old = t_old - hours_in_year
+    endif
+
+    pold = (t_new - thour00) / (t_new - t_old)
+    pnew = max(0.0, 1.0 - pold)
+  end subroutine get_linear_coeff
+
+  subroutine get_rnd_stoch(rnd, rnd_l, ascii_file)
+    implicit none
+
+    ! IN
+    integer (int_kind), intent(in) :: rnd_l
+    character(*), intent(in) :: ascii_file
+    ! OUT
+    real (r8), dimension(rnd_l), intent(out) :: rnd
+    ! LOCAL
+    integer (int_kind) :: funit = 21
+    logical :: fcheck
+
+    if (my_task == master_task) then
+      inquire( file=trim(ascii_file), exist=fcheck )
+      if (.not. fcheck) then
+        write(*,*) "Unable to open random number file: ", trim(ascii_file)
+      else
+        open(funit, file=trim(ascii_file), status="old", action="read")
+        read(funit, fmt=*) rnd(:)
+        close(funit)
+      endif
+    endif
+
+    call broadcast_scalar(fcheck, master_task)
+    if (.not. fcheck) then
+      call exit_POP(sigAbort,'error while reading random numbers data file')
+    endif
+
+    call broadcast_array(rnd, master_task)
+  end subroutine get_rnd_stoch
 
 end module forcing_stoch
