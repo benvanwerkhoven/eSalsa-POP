@@ -1989,6 +1989,9 @@ end subroutine read_shf_namelist
 !
 ! !REVISION HISTORY:
 !  same as module
+   use forcing_stoch, only: append_stoch_temp_shf
+
+   implicit none
 
 ! !INPUT PARAMETERS:
 
@@ -2016,6 +2019,9 @@ end subroutine read_shf_namelist
    real (r8), dimension(nx_block,ny_block) :: &
       RTEA,             &!  work array
       FRAC_CLOUD_COVER   !  fractional cloud cover
+
+   real (r8), dimension(nx_block,ny_block,max_blocks_clinic) :: &
+      AST_TEMP           ! Temporary Air @ SST holder to handle stochastic value
 
    real (r8), parameter ::           &
       windspd_height = 10.0_r8,      &
@@ -2065,6 +2071,18 @@ end subroutine read_shf_namelist
 !----------------------------------------------------------------------
    call ocean_weights(now)
 
+!----------------------------------------------------------------------
+!
+!  Stochastic forcing for NCEP take the form of temperature
+!
+!----------------------------------------------------------------------
+
+   do iblock = 1, nblocks_clinic
+     AST_TEMP(:,:,iblock) = SHF_DATA(:,:,iblock,shf_data_tair,now)
+   enddo
+   ! Note: STF is empty, but needed in append_stoch_temp_shf
+   ! because it interface with various forcing models.
+   call append_stoch_temp_shf(STF, AST_TEMP)
 
 !----------------------------------------------------------------------
 !
@@ -2084,7 +2102,7 @@ end subroutine read_shf_namelist
       call sen_lat_flux(                                            &
          SHF_DATA(:,:,iblock,shf_data_windspd,now), windspd_height, &
          TRACER(:,:,1,1,curtime,iblock),                            &
-         SHF_DATA(:,:,iblock,shf_data_tair,now),    tair_height,    &
+         AST_TEMP(:,:,iblock),    tair_height,    &
          SHF_DATA(:,:,iblock,shf_data_qair,now),    qair_height,    &
          T0_Kelvin, SHF_COMP(:,:,iblock,shf_comp_qsens),            &
                     SHF_COMP(:,:,iblock,shf_comp_qlat))
@@ -2106,12 +2124,12 @@ end subroutine read_shf_namelist
                  *SHF_DATA(:,:,iblock,shf_data_qair,now)) + eps2 )
 
       SHF_COMP(:,:,iblock,shf_comp_qlw) = -emissivity*stefan_boltzmann*&
-                            SHF_DATA(:,:,iblock,shf_data_tair,now)**3* &
-                           (SHF_DATA(:,:,iblock,shf_data_tair,now)*    &
+                            AST_TEMP(:,:,iblock)**3* &
+                           (AST_TEMP(:,:,iblock)*    &
                             (0.39_r8-0.05_r8*RTEA)*FRAC_CLOUD_COVER +  &
                             c4*(TRACER(:,:,1,1,curtime,iblock) +       &
                             T0_Kelvin -                                &
-                            SHF_DATA(:,:,iblock,shf_data_tair,now)) )
+                            AST_TEMP(:,:,iblock)) )
 
 !----------------------------------------------------------------------
 !

@@ -347,17 +347,64 @@ contains
       return
     endif
 
+    ! The ERA5-Data return a stochastic temperature
+    ! while baseline-frac, return a flux -> exit with the former
+    if (sf_fwf_formulation == 'ERA5-Data') then
+      return
+    endif
+
    ! Compute the stoicastic heat forcing
    call calc_stochastic_shf(STF, STF_stoch)
 
    ! Add stochastic forcing to baseline forcing
-   !!$OMP PARALLEL DO PRIVATE(iblock)
-   !do iblock = 1, nblocks_clinic
-   !   STF(:,:,1,iblock) = STF(:,:,1,iblock) + STF_stoch(:,:,1,iblock)
-   !enddo
-   !!$OMP END PARALLEL DO
+   !$OMP PARALLEL DO PRIVATE(iblock)
+   do iblock = 1, nblocks_clinic
+      STF(:,:,1,iblock) = STF(:,:,1,iblock) + STF_stoch(:,:,1,iblock)
+   enddo
+   !$OMP END PARALLEL DO
 
   end subroutine append_stoch_forcing_shf
+
+  subroutine append_stoch_temp_shf(STF, AST)
+
+    use forcing_fields, only : STF_stoch
+
+    implicit none
+
+    ! !INPUT/OUTPUT PARAMETERS:
+    real (r8), dimension(nx_block,ny_block,max_blocks_clinic), &
+       intent(in) :: &
+       STF     ! Air temperature
+    real (r8), dimension(nx_block,ny_block,max_blocks_clinic), &
+       intent(inout) :: &
+       AST     ! Air temperature
+
+    ! LOCAL
+    integer (int_kind) :: &
+       iblock              ! block loop index
+
+    ! Return if stoch shf not activated
+    if (.not. stochastic_forcing_hf) then
+      return
+    endif
+
+    ! The ERA5-Data return a stochastic temperature
+    ! while baseline-frac, return a flux -> exit with the latest
+    if (sf_fwf_formulation == 'baseline-frac') then
+      return
+    endif
+
+    ! Compute the stocastic heat forcing
+    call calc_stochastic_shf(STF, STF_stoch)
+
+    ! Add stochastic air temperature to baseline value
+    !$OMP PARALLEL DO PRIVATE(iblock)
+    do iblock = 1, nblocks_clinic
+       AST(:,:,iblock) = AST(:,:,iblock) + STF_stoch(:,:,1,iblock)
+    enddo
+    !$OMP END PARALLEL DO
+
+  end subroutine append_stoch_temp_shf
 
   subroutine calc_stochastic_sfwf(STF, STF_stoch)
     ! !DESCRIPTION:
@@ -523,6 +570,10 @@ contains
     real (r8) :: pold, pnew! Interpolation coefficients for ERA5-Data forcing
 
     select case (sf_fwf_formulation)
+    case ('baseline-frac')      ! TODO
+      do iblock = 1, nblocks_clinic
+        STF_stoch(:,:,1,iblock) = c0
+      end do
     case ('ERA5-Data')
       ! Check if a new random field has to be generated
       if (thour00 >= sf_hf_data_update) then
