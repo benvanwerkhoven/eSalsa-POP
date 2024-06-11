@@ -95,13 +95,13 @@
 
  end subroutine check_status
 
- subroutine read_AR_netcdf_file_header(data_file, grp_name, eof_l, lag_l)
+ subroutine read_AR_netcdf_file_header(data_file, ext_name, eof_l, lag_l)
 
    implicit none
 
    type (datafile), intent (inout)  :: data_file
    character (*) :: &
-      grp_name        ! The name of the group to load data from
+      ext_name        ! The name of the group to load data from
 
    integer (i4), intent(out) ::  &
      eof_l, &
@@ -118,10 +118,8 @@
    integer (i4) ::  &
       iostat,       &! status flag
       ncid,         &! netCDF file id
-      grpid,        &! netCDF group id
       dimid,        &! netCDF dimension id
-      ndim, nvar,natt,k_un, k_form, k,&
-      numgrps,      &! number of groups
+      ndim, nvar,natt,k_un, k_form, k, d,&
       nsize,        &! size parameter returned by inquire function
       n,            &! loop index
       itype,        &! netCDF data type
@@ -130,6 +128,9 @@
 
     integer (i4), dimension(20) :: &
       ncids          ! netCDF group ids
+
+   character (20) :: &
+      dim_eof, dim_lag
 
 
    logical (log_kind) :: &
@@ -176,23 +177,15 @@
    call broadcast_scalar(ncid, master_task)
    data_file%id(1) = ncid
 
-   ! Determine the ID of the requested groupname
    if (my_task == master_task) then
-      iostat = nf90_inq_ncid(ncid, grp_name, grpid)
-   end if
-
-   call broadcast_scalar(iostat, master_task)
-   if (iostat /= nf90_noerr) &
-      call exit_POP(sigAbort, &
-                    'error getting '//trim(grp_name)//' in file')
-   
-   if (my_task == master_task) then
-     iostat = nf90_inquire(grpid, nDimensions=ndim, nVariables=nvar, nAttributes=natt)
-     do k=1,ndim
-       iostat = nf90_inquire_dimension(grpid, k, att_name, att_ival )
-       if (att_name == "eof_d") then
+     write(dim_eof,"(2A)") "eof_d_",trim(ext_name)
+     write(dim_lag,"(2A)") "lag_d_",trim(ext_name)
+     iostat = nf90_inquire(ncid, nDimensions=ndim, nVariables=nvar, nAttributes=natt)
+     do k = 1, ndim
+       iostat = nf90_inquire_dimension(ncid, k, att_name, att_ival)
+       if (att_name == trim(dim_eof)) then
          eof_l = att_ival
-       else if (att_name == "lag_d") then
+       else if (att_name == trim(dim_lag)) then
          lag_l = att_ival
        endif
      enddo
@@ -206,24 +199,28 @@
    call broadcast_scalar(eof_l, master_task)
    call broadcast_scalar(lag_l, master_task)
 
+   if (my_task == master_task) then
+      iostat = nf90_close(ncid)
+   end if
+
  end subroutine read_AR_netcdf_file_header
 
- subroutine read_AR_netcdf_file_data(data_file, grp_name,   &
+ subroutine read_AR_netcdf_file_data(data_file, ext_name,   &
                                      eof_l, lag_l,          &
-                                     lags, sig, rho, hist)
+                                     lags, sig, rho, hist, rnd)
 
    implicit none
 
    type (datafile), intent (inout)  :: data_file
    character (*) :: &
-      grp_name        ! The name of the group to load data from
+      ext_name        ! The name of the group to load data from
 
    integer (i4), intent(in) ::  &
      eof_l, &
      lag_l
 
    integer(int_kind), dimension(eof_l), intent(out) :: lags
-   real(r8) , dimension(eof_l), intent(out) :: sig
+   real(r8) , dimension(eof_l), intent(out) :: sig, rnd
    real(r8) , dimension(lag_l, eof_l), intent(out) :: rho, hist
 
    ! local variables
@@ -237,10 +234,8 @@
    integer (i4) ::  &
       iostat,       &! status flag
       ncid,         &! netCDF file id
-      grpid,        &! netCDF group id
       dimid,        &! netCDF dimension id
       ndim, nvar,natt,k_un, k_form, k, xtype, &
-      numgrps,      &! number of groups
       nsize,        &! size parameter returned by inquire function
       n,            &! loop index
       itype,        &! netCDF data type
@@ -249,9 +244,11 @@
 
     integer (i4), allocatable, dimension(:) :: dimids
 
-    integer (i4), dimension(20) :: &
-      ncids          ! netCDF group ids
+   character (20) :: &
+      v_lag, v_rho, v_rnd, v_sig, v_hist
 
+   integer (i4), dimension(20) :: &
+      ncids          ! netCDF group ids
 
    logical (log_kind) :: &
       att_lval           ! temp space for logical attribute
@@ -297,38 +294,36 @@
    call broadcast_scalar(ncid, master_task)
    data_file%id(1) = ncid
 
-   ! Determine the ID of the requested groupname
    if (my_task == master_task) then
-      iostat = nf90_inq_ncid(ncid, grp_name, grpid)
-   end if
+     write(v_rho,"(2A)") "rho_",trim(ext_name)
+     write(v_sig,"(2A)") "sig_",trim(ext_name)
+     write(v_rnd,"(2A)") "rnd_",trim(ext_name)
+     write(v_hist,"(2A)") "hist_",trim(ext_name)
+     write(v_lag,"(2A)") "lags_",trim(ext_name)
 
-   call broadcast_scalar(iostat, master_task)
-   if (iostat /= nf90_noerr) &
-      call exit_POP(sigAbort, &
-                    'error getting '//trim(grp_name)//' in file')
-
-   if (my_task == master_task) then
-     iostat = nf90_inquire(grpid, nDimensions=ndim, nVariables=nvar, nAttributes=natt)
+     iostat = nf90_inquire(ncid, nDimensions=ndim, nVariables=nvar, nAttributes=natt)
      if (iostat /= nf90_noerr) then
-       write(*,*) "Error getting variables information in group ", trim(grp_name)
+       write(*,*) "Error getting variables information"
      endif
-     do k=1,ndim
-        iostat = nf90_inquire_dimension(grpid, k, att_name, att_ival )
+     do k = 1, ndim
+        iostat = nf90_inquire_dimension(ncid, k, att_name, att_ival )
      enddo
      allocate(dimids(1:ndim))
      do k = 1, nvar
-       iostat = nf90_inquire_variable(grpid, k, att_name, xtype, ndim, dimids, natt )
+       iostat = nf90_inquire_variable(ncid, k, att_name, xtype, ndim, dimids, natt )
        if (iostat /= nf90_noerr) then
          write(*,*) "Error getting information for variable ", trim(att_name)
        endif
-       if (att_name(1:4) == "lags") then
-         iostat = nf90_get_var(grpid, k, lags)
-       else if (att_name(1:3) == "sig") then
-         iostat = nf90_get_var(grpid, k, sig)
-       else if (att_name(1:3) == "rho") then
-         iostat = nf90_get_var(grpid, k, rho, (/ 1,1 /))
-       else if (att_name(1:4) == "hist") then
-         iostat = nf90_get_var(grpid, k, hist, (/ 1,1 /))
+       if (trim(att_name) == v_lag) then
+         iostat = nf90_get_var(ncid, k, lags)
+       else if (trim(att_name) == v_sig) then
+         iostat = nf90_get_var(ncid, k, sig)
+       else if (trim(att_name) == v_rnd) then
+         iostat = nf90_get_var(ncid, k, rnd)
+       else if (trim(att_name) == v_rho) then
+         iostat = nf90_get_var(ncid, k, rho, (/ 1,1 /))
+       else if (trim(att_name) == v_hist) then
+         iostat = nf90_get_var(ncid, k, hist, (/ 1,1 /))
        endif
        if (iostat /= nf90_noerr) then
          write(*,*) "Error reading variable data ", trim(att_name), NF90_STRERROR(iostat)
@@ -343,8 +338,13 @@
 
    call broadcast_array(lags, master_task)
    call broadcast_array(sig,  master_task)
+   call broadcast_array(rnd,  master_task)
    call broadcast_array(rho,  master_task)
    call broadcast_array(hist, master_task)
+
+   if (my_task == master_task) then
+      iostat = nf90_close(ncid)
+   end if
 
  end subroutine read_AR_netcdf_file_data
 
@@ -373,10 +373,8 @@
    integer (i4) ::  &
       iostat,       &! status flag
       ncid,         &! netCDF file id
-      grpid,        &! netCDF group id
       dimid,        &! netCDF dimension id
       ndim, nvar,natt,k_un, k_form, k, xtype, e, i,j, &
-      numgrps,      &! number of groups
       nsize,        &! size parameter returned by inquire function
       n,            &! loop index
       itype,        &! netCDF data type
