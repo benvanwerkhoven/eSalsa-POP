@@ -8,6 +8,10 @@
 !  Contains routines and variables used for determining the
 !  surface fresh water flux.
 !
+! MK-LE
+! 2024-04-06 Michael Kliphuis (MK) and Lucas Esclapez (LE) added sfwf anomaly for POP hysterese run
+! /MK
+!
 ! !REVISION HISTORY:
 !  SVN:$Id: forcing_sfwf.F90 12674 2008-10-31 22:21:32Z njn01 $
 !
@@ -81,6 +85,10 @@
       tavg_PRECIP,           &! tavg id for precipitation fresh water flux
       tavg_S_WEAK_REST,      &! tavg id for weak restoring fresh water flux
       tavg_S_STRONG_REST,    &! tavg id for strong restoring fresh water flux
+!MK
+      tavg_RUNOFF_ORIG,    &! tavg id for original river runoff fresh water fluxi &
+                            ! before added IMAU freshwater perturbation
+!/MK
       tavg_RUNOFF             ! tavg id for river runoff fresh water flux
 
 !EOP
@@ -185,6 +193,71 @@
       lms_balance           ! control balancing of P,E,M,R,S in marginal seas
                             ! .T. only with sfc_layer_oldfree option
 
+
+! MK
+!-----------------------------------------------------------------------
+!  variables for IMAU forcing i.e. add surface freshwater flux anomaly
+!-----------------------------------------------------------------------
+
+   character (char_len) ::  &
+      imau_filename,        &! name of file containing imau surface freshwater flux anomaly (current year)
+      imau_filename_prev,   &! name of file containing imau surface freshwater flux anomaly (previous year)
+      imau_filename_next,   &! name of file containing imau surface freshwater flux anomaly (next year)
+      imau_data_label,      &
+      imau_file_fmt,        &
+      imau_interp_type,     &
+      imau_interp_freq,     &
+      imau_formulation
+
+   character (char_len), public :: &
+      imau_data_type         ! keyword for period of forcing data
+
+   character (char_len), dimension(:), allocatable :: &
+      imau_data_names        ! short names for input data fields
+
+   integer (int_kind) ::    &
+      imau_data_sfwf
+
+   real (r8), public :: &
+      imau_hosing_factor     ! time (hours) corresponding to surface freshwater flux anomaly
+
+   real (r8), dimension(12) :: &
+      imau_data_time      ! time (hours) corresponding to surface freshwater flux anomaly
+
+                      real (r8) ::             &
+      imau_data_inc,     &! time increment between values of anomaly forcing data
+      imau_data_next,    &! time to be used for next value of anomaly forcing data
+      imau_data_update,  &! time new anomaly forcing data needs to be added to interpolation set
+      imau_interp_inc,   &! time increment between interpolation
+      imau_interp_next,  &! time when next interpolation will be done
+      imau_interp_last    ! time when last interpolation was done
+
+   integer (int_kind) :: &
+      imau_interp_order,      &! order of temporal interpolation
+      imau_data_time_min_loc, &! time index for first surface freshwater flux data point
+      imau_data_num_fields
+
+   real (r8), dimension(20) :: &
+      imau_data_renorm         ! factor for converting to model units
+
+   integer (int_kind), dimension(:), allocatable :: &
+      imau_bndy_loc,           &! location and field types for ghost
+      imau_bndy_type            ! cell update routines
+
+   real (r8), allocatable, dimension(:,:,:,:,:) :: &
+      IMAU_DATA    ! external surface freshwater flux anomaly forcing data
+
+   real (r8), allocatable, dimension(:,:,:,:) :: &
+      PREV_DATA,    &! external surface freshwater flux anomaly forcing data for December of the previous year
+      NEXT_DATA      ! external surface freshwater flux anomaly forcing data for January of the next year
+
+   type (io_field_desc) :: &
+      io_sfwf_imau       ! io field descriptor for imau surface freshwater flux anomaly sfwf
+
+
+! /MK
+
+
 !EOC
 !***********************************************************************
 
@@ -207,6 +280,19 @@ subroutine read_sfwf_namelist
                                sfwf_strong_restore_ms,                &
                                lsend_precip_fact,   lms_balance
 
+
+! MK
+   ! define namelist for IMAU forcing i.e. add surface freshwater flux anomaly
+   ! NOTE: any variable read from namelist should have a corresponding
+   ! broadcast_scalar() later on!
+
+   namelist /forcing_imau_nml/ imau_filename, imau_filename_prev, &
+                               imau_filename_next, imau_data_type, &
+                               imau_hosing_factor
+
+! / MK
+
+
 !-----------------------------------------------------------------------
 !
 !  read surface fresh water flux namelist input after setting
@@ -217,8 +303,8 @@ subroutine read_sfwf_namelist
    sfwf_formulation       = 'restoring'
    sfwf_data_type         = 'analytic'
    sfwf_data_inc          = 1.e20_r8
-   sfwf_interp_freq       = 'never'
    sfwf_interp_type       = 'nearest'
+   sfwf_interp_freq       = 'never'
    sfwf_interp_inc        = 1.e20_r8
    sfwf_restore_tau       = 1.e20_r8
    sfwf_filename          = 'unknown-sfwf'
@@ -249,6 +335,7 @@ subroutine read_sfwf_namelist
       if (nml_error == 0) close(nml_in)
    endif
 
+
    call broadcast_scalar(nml_error, master_task)
    if (nml_error /= 0) then
      call exit_POP(sigAbort,'ERROR reading forcing_sfwf_nml')
@@ -274,6 +361,66 @@ subroutine read_sfwf_namelist
    call broadcast_scalar(runoff,                 master_task)
    call broadcast_scalar(runoff_and_flux,        master_task)
    call broadcast_scalar(fwf_imposed,            master_task)
+
+! MK
+!-----------------------------------------------------------------------
+!
+!  read IMAU surface freshwater flux anomaly namelist input after setting
+!  default values.
+!
+!-----------------------------------------------------------------------
+
+   imau_filename          = 'unknown-imau-file'
+   imau_filename_prev     = 'unknown-imau-file'
+   imau_filename_next     = 'unknown-imau-file'
+   imau_data_type         = 'none'
+
+   ! The following parameters are hardcoded for now (some are not even used but
+   ! are needed in some function calls)
+   imau_file_fmt          = 'nc'
+   imau_data_inc          = 24.
+   imau_interp_inc        = 6.
+   imau_interp_type       = 'linear'
+   imau_interp_freq       = 'every-timestep'
+   imau_data_renorm       = c1
+   imau_formulation       = 'imau-formulation'
+   imau_hosing_factor     = 0.0
+
+   if (my_task == master_task) then
+      write(stdout,*) 'DEBUG the IMAU private code [forcing_sfwf.F90]'
+   endif
+
+   if (my_task == master_task) then
+      open (nml_in, file=nml_filename, status='old',iostat=nml_error)
+      if (nml_error /= 0) then
+         nml_error = -1
+      else
+         nml_error =  1
+      endif
+      do while (nml_error > 0)
+         read(nml_in, nml=forcing_imau_nml,iostat=nml_error)
+      end do
+      if (nml_error == 0) close(nml_in)
+   endif
+
+   call broadcast_scalar(nml_error, master_task)
+   if (nml_error /= 0) then
+      call exit_POP(sigAbort,'ERROR reading forcing_imau_nml')
+   endif
+
+   call broadcast_scalar(imau_data_type,         master_task)
+   call broadcast_scalar(imau_filename,          master_task)
+   call broadcast_scalar(imau_filename_prev,     master_task)
+   call broadcast_scalar(imau_filename_next,     master_task)
+   call broadcast_scalar(imau_hosing_factor,     master_task)
+
+   if (my_task == master_task) then
+      write(stdout,*) 'DEBUG imau_data_type = ', trim(imau_data_type)
+      write(stdout,*) 'DEBUG imau_filename = ', trim(imau_filename)
+      write(stdout,*) 'DEBUG imau_filename_prev = ', trim(imau_filename_prev)
+      write(stdout,*) 'DEBUG imau_filename_next = ', trim(imau_filename_next)
+      write(stdout,*) 'DEBUG imau_hosing_factor = ', imau_hosing_factor
+   endif
 
 end subroutine read_sfwf_namelist
 
@@ -342,6 +489,193 @@ end subroutine read_sfwf_namelist
       i_dim, j_dim, &! dimension descriptors for horiz dimensions
       month_dim      ! dimension descriptor  for monthly data
 
+   real (r8), dimension(:,:,:,:,:), allocatable :: &
+      TEMP_IMAU_SFWF_DATA        ! temp array for reading monthly data
+
+!-----------------------------------------------------------------------
+!
+!  convert data_type to 'monthly-calendar' if input is 'monthly'
+!
+!-----------------------------------------------------------------------
+
+   if (imau_data_type == 'monthly') imau_data_type = 'monthly-calendar'
+
+
+!-----------------------------------------------------------------------
+!
+!  set values of the surface freshwater flux anomaly  array IMAU_DATA
+!
+!-----------------------------------------------------------------------
+
+   select case (imau_data_type)
+
+   case ('none')
+
+      !-----------------------------------------------------------------------
+      !  no surface freshwater flux anomaly, no file is read
+      !-----------------------------------------------------------------------
+
+      if (my_task == master_task) then
+         write(stdout,*) 'DEBUG case imau_data_type = none, no action needed'
+      endif
+
+   case ('annual')
+
+      !-----------------------------------------------------------------------
+      !  annual surface freshwater flux anomaly (read in from a file)
+      !-----------------------------------------------------------------------
+
+      if (my_task == master_task) then
+         write(stdout,*) 'DEBUG case imau_data_type = annual, not implemented (yet)'
+         call exit_POP(sigAbort,'imau_data_type = annual is not implemented')
+      endif
+
+   case ('monthly-calendar')
+
+      !-----------------------------------------------------------------------
+      !  monthly mean climatological surface freshwater flux anomalies. all
+      !  12 months are read in from a file and are linearly interpolated
+      !  for each day
+      !-----------------------------------------------------------------------
+
+      if (my_task == master_task) then
+         write(stdout,*) 'DEBUG case imau_data_type = monthly-calendar'
+      endif
+
+      imau_data_num_fields = 1
+      imau_data_sfwf        = 1
+
+      allocate(IMAU_DATA(nx_block,ny_block,max_blocks_clinic,      &
+                                     imau_data_num_fields,0:12),   &
+               TEMP_IMAU_SFWF_DATA(nx_block,ny_block,12,max_blocks_clinic,   &
+                                           imau_data_num_fields),  &
+               PREV_DATA(nx_block,ny_block,max_blocks_clinic, &
+                                       imau_data_num_fields),      &
+               NEXT_DATA(nx_block,ny_block,max_blocks_clinic, &
+                                       imau_data_num_fields))
+      IMAU_DATA = c0
+      PREV_DATA = c0
+      NEXT_DATA = c0
+
+      allocate(imau_data_names(imau_data_num_fields), &
+               imau_bndy_loc  (imau_data_num_fields), &
+               imau_bndy_type (imau_data_num_fields))
+
+      i_dim = construct_io_dim('i',nx_global)
+      j_dim = construct_io_dim('j',ny_global)
+      month_dim = construct_io_dim('month',12)
+
+      imau_data_names(imau_data_sfwf)     = 'SFWF_ANOM'
+      imau_bndy_loc  (imau_data_sfwf)     = field_loc_center
+      imau_bndy_type (imau_data_sfwf)     = field_type_scalar
+
+      call find_forcing_times(imau_data_time,   imau_data_inc,  &
+                              imau_interp_type, imau_data_next, &
+                              imau_data_time_min_loc,           &
+                              imau_data_update, imau_data_type)
+
+      call read_imau_forcing_fields(imau_filename)
+
+      !*** re-order data ( optional: renormalize data / different units.
+
+      !$OMP PARALLEL DO PRIVATE(iblock, k, n)
+      do iblock=1,nblocks_clinic
+         do k=1,imau_data_num_fields
+            do n=1,12
+               IMAU_DATA(:,:,iblock,k,n) = TEMP_IMAU_SFWF_DATA(:,:,n,iblock,k)
+            end do
+         end do
+      end do
+      !$OMP END PARALLEL DO
+
+      call read_imau_forcing_fields(imau_filename_prev)
+      !$OMP PARALLEL DO PRIVATE(iblock, k, n)
+      do iblock=1,nblocks_clinic
+         do k=1,imau_data_num_fields
+            PREV_DATA(:,:,iblock,k) = TEMP_IMAU_SFWF_DATA(:,:,12,iblock,k)
+         end do
+      end do
+      !$OMP END PARALLEL DO
+
+      call read_imau_forcing_fields(imau_filename_next)
+      !$OMP PARALLEL DO PRIVATE(iblock, k, n)
+      do iblock=1,nblocks_clinic
+         do k=1,imau_data_num_fields
+            NEXT_DATA(:,:,iblock,k) = TEMP_IMAU_SFWF_DATA(:,:,1,iblock,k)
+         end do
+      end do
+      !$OMP END PARALLEL DO
+
+      ! It is very important to deallocate TEMP_DATA so that it can safely be used later when reading in the
+      ! original surface heat flux data
+
+      deallocate(TEMP_IMAU_SFWF_DATA)
+
+   case default
+
+      call exit_POP(sigAbort, &
+                    'forcing_sfwf: Unknown value for imau_data_type')
+
+   end select
+
+!-----------------------------------------------------------------------
+!
+!  now check interpolation period (imau_interp_freq) to set the
+!    time for the next temporal interpolation (imau_interp_next).
+!
+!  if no interpolation is to be done, set next interpolation time
+!    to a large number so the surface freshwater flux update test
+!    in routine set_surface_forcing will always be false.
+!
+!  if interpolation is to be done every n-hours, find the first
+!    interpolation time greater than the current time.
+!
+!  if interpolation is to be done every timestep, set next interpolation
+!    time to a large negative number so the surface freshwater flux
+!    update test in routine set_surface_forcing will always be true.
+!
+!-----------------------------------------------------------------------
+
+   select case (imau_interp_freq)
+
+   case ('never')
+
+      imau_interp_next = never
+      imau_interp_last = never
+      imau_interp_inc  = c0
+
+!   case ('n-hour')
+!
+!      call find_interp_time(shf_interp_inc, shf_interp_next)
+
+   case ('every-timestep')
+
+      imau_interp_next = always
+      imau_interp_inc  = c0
+
+   case default
+
+      call exit_POP(sigAbort, &
+                    'pop_init_coupled: Unknown value for imau_interp_freq')
+
+   end select
+
+   if(nsteps_total == 0) imau_interp_last = thour00
+
+!-----------------------------------------------------------------------
+!
+!  echo forcing options to stdout.
+!
+!-----------------------------------------------------------------------
+
+   imau_data_label = 'IMAU surface freshwater flux anomalies'
+   call echo_forcing_options(imau_data_type,                     &
+                             imau_formulation, imau_data_inc,    &
+                             imau_interp_freq, imau_interp_type, &
+                             imau_interp_inc,  imau_data_label)
+
+
+! / MK
 
 !-----------------------------------------------------------------------
 !
@@ -1116,6 +1450,12 @@ end subroutine read_sfwf_namelist
                           long_name='Salinity Strong Restoring',           &
                           units='kg/m^2/s', grid_loc='2111')
 
+!MK
+   call define_tavg_field(tavg_RUNOFF_ORIG,'RUNOFF_ORIG',2,           &
+                          long_name='Original River Runoff',           &
+                          units='kg/m^2/s', grid_loc='2111')
+!/MK
+
    call define_tavg_field(tavg_RUNOFF,'RUNOFF',2,           &
                           long_name='River Runoff',           &
                           units='kg/m^2/s', grid_loc='2111')
@@ -1124,6 +1464,54 @@ end subroutine read_sfwf_namelist
 !EOC
 
  call POP_IOUnitsFlush(POP_stdout)
+
+! MK
+
+contains
+
+   ! ------------------------------------------------
+   ! Auxiliary routine that is called three times:
+   !   o for the field IMAU_DATA (file 1)
+   !   o for the field PREV_DATA (file 2)
+   !   o for the field NEXT_DATA (file 3)
+   !
+   ! Therefore refactored
+   ! ------------------------------------------------
+
+   subroutine read_imau_forcing_fields(filename)
+
+      character (char_len) :: filename  ! name of file containing forcing data (current year)
+
+      forcing_file = construct_file(imau_file_fmt,                 &
+                                    full_name=trim(filename), &
+                                    record_length = rec_type_dbl,  &
+                                    recl_words=nx_global*ny_global)
+      call data_set(forcing_file,'open_read')
+
+      io_sfwf_imau = construct_io_field( &
+                    trim(imau_data_names(imau_data_sfwf)),       &
+                    dim1=i_dim, dim2=j_dim, dim3=month_dim,               &
+                    field_loc  = imau_bndy_loc(imau_data_sfwf),   &
+                    field_type = imau_bndy_type(imau_data_sfwf), &
+                    d3d_array=TEMP_IMAU_SFWF_DATA(:,:,:,:,imau_data_sfwf))
+
+      call data_set(forcing_file,'define',io_sfwf_imau)
+
+      call data_set(forcing_file,'read'  ,io_sfwf_imau)
+
+      call destroy_io_field(io_sfwf_imau)
+
+      call data_set(forcing_file,'close')
+      call destroy_file(forcing_file)
+
+      if (my_task == master_task) then
+         write(stdout,blank_fmt)
+         write(stdout,'(a25,a)') ' IMAU Monthly file read: ', &
+                                 trim(filename)
+      endif
+
+   end subroutine read_imau_forcing_fields
+! / MK
 
  end subroutine init_sfwf
 
@@ -1269,6 +1657,69 @@ end subroutine read_sfwf_namelist
                               sfwf_interp_next + sfwf_interp_inc
       endif
 
+! MK
+      !-----------------------------------------------------------------------
+      ! 
+      ! Interpolate IMAU data to get values needed for current timestep 
+      !
+      !-----------------------------------------------------------------------
+
+
+      if (imau_data_type == 'monthly-calendar') then
+           imau_data_label = 'IMAU Monthly'
+
+
+        if (thour00 >= imau_data_update) then
+
+          call update_forcing_data(                   imau_data_time,   &
+                                imau_data_time_min_loc, imau_interp_type, &
+                                imau_data_next,         imau_data_update, &
+                                imau_data_type,         imau_data_inc,    &
+                                IMAU_DATA(:,:,:,:,1:12),imau_data_renorm, &
+                                imau_data_label,        imau_data_names,  &
+                                imau_bndy_loc,          imau_bndy_type,   &
+                                imau_filename,          imau_file_fmt)
+        endif
+
+        if (thour00 >= imau_interp_next .or. nsteps_run == 0) then
+
+            if ( (thour00 - thour00_begin_this_year) < thour00_midmonth_calendar(6) ) then
+               ! first half of the year
+               ! when imau_data_time_min_loc = 12, this indicates begin-January
+               call interpolate_forcing(IMAU_DATA(:,:,:,:,0),               &
+                                     IMAU_DATA(:,:,:,:,1:12),            &
+                               imau_data_time,         imau_interp_type, &
+                               imau_data_time_min_loc, imau_interp_freq, &
+                               imau_interp_inc,        imau_interp_next, &
+                               imau_interp_last,       nsteps_run,       &
+                               field_prev = PREV_DATA)
+            else
+               ! second half of the year
+               ! when imau_data_time_min_loc = 12, this indicates end-December
+               call interpolate_forcing(IMAU_DATA(:,:,:,:,0),               &
+                                     IMAU_DATA(:,:,:,:,1:12),            &
+                               imau_data_time,         imau_interp_type, &
+                               imau_data_time_min_loc, imau_interp_freq, &
+                               imau_interp_inc,        imau_interp_next, &
+                               imau_interp_last,       nsteps_run,       &
+                               field_next = NEXT_DATA)
+            endif
+         
+            if (nsteps_run /= 0) imau_interp_next = &
+                                 imau_interp_next + imau_interp_inc
+
+            if (my_task == master_task) then
+              ! write(6,*) 'MIKE: nsteps_run is nu: ',nsteps_run
+            endif
+
+        endif
+
+      else
+           imau_data_label = 'unknown IMAU data label'
+      endif
+
+! /MK 
+
       select case (sfwf_formulation)
       case ('restoring')
 
@@ -1410,6 +1861,12 @@ end subroutine read_sfwf_namelist
       k, n,              &! dummy loop indices
       iblock              ! block loop index
 
+!MK 
+!  define factor with which should be multiplied for hosing
+!  in year 1, factor is 1, year 2, factor is 2 etc
+   real (r8) :: hosing_factor
+!/MK
+
    real (r8) ::           &
       dttmp,              &! temporary time step variable
       fres_hor_ave,       &! area-weighted mean of weak restoring
@@ -1454,6 +1911,118 @@ end subroutine read_sfwf_namelist
       now = 0
    endif
 
+! MK
+!-----------------------------------------------------------------------
+!
+! Determine IMAU SFWF forcing anomaly that will be added to virtual salt flux field
+!
+!-----------------------------------------------------------------------
+
+   select case (imau_data_type)
+
+      case ('annual')
+
+        if (my_task == master_task) then
+          write(stdout,*) 'DEBUG case imau_data_type = annual, not implemented (yet)'
+          call exit_POP(sigAbort,'imau_data_type = annual is not implemented')
+        endif
+
+      
+      case ('monthly-calendar')
+
+         imau_data_label = 'IMAU Monthly'
+
+         if (thour00 >= imau_data_update) then
+            call update_forcing_data(                   imau_data_time,   &
+                                imau_data_time_min_loc, imau_interp_type, &
+                                imau_data_next,         imau_data_update, &
+                                imau_data_type,         imau_data_inc,    &
+                                IMAU_DATA(:,:,:,:,1:12),imau_data_renorm, &
+                                imau_data_label,        imau_data_names,  &
+                                imau_bndy_loc,          imau_bndy_type,   &
+                                imau_filename,          imau_file_fmt)
+         endif
+
+         if (thour00 >= imau_interp_next .or. nsteps_run == 0) then
+
+            if ( (thour00 - thour00_begin_this_year) < thour00_midmonth_calendar(6) ) then
+               ! first half of the year
+               ! when imau_data_time_min_loc = 12, this indicates begin-January
+               call interpolate_forcing(IMAU_DATA(:,:,:,:,0),               &
+                                     IMAU_DATA(:,:,:,:,1:12),            &
+                               imau_data_time,         imau_interp_type, &
+                               imau_data_time_min_loc, imau_interp_freq, &
+                               imau_interp_inc,        imau_interp_next, &
+                               imau_interp_last,       nsteps_run,       &
+                               field_prev = PREV_DATA)
+            else
+               ! second half of the year
+               ! when imau_data_time_min_loc = 12, this indicates end-December
+               call interpolate_forcing(IMAU_DATA(:,:,:,:,0),               &
+                                     IMAU_DATA(:,:,:,:,1:12),            &
+                               imau_data_time,         imau_interp_type, &
+                               imau_data_time_min_loc, imau_interp_freq, &
+                               imau_interp_inc,        imau_interp_next, &
+                               imau_interp_last,       nsteps_run,       &
+                               field_next = NEXT_DATA)
+            endif
+
+            if (nsteps_run /= 0) imau_interp_next = &
+                                 imau_interp_next + imau_interp_inc
+         endif
+
+         ! -----------------------------------------------------
+         ! accumulate runoff tavg diagnostics if requested
+         ! -----------------------------------------------------
+
+         !if (tavg_requested(tavg_RUNOFF_ORIG) ) then
+         !   !$OMP PARALLEL DO PRIVATE(iblock)
+         !   do iblock = 1, nblocks_clinic
+         !      call update_tavg_field(  &
+         !               RUNOFF(:,:,iblock), tavg_RUNOFF_ORIG,iblock,1)
+         !   enddo
+         !   !$OMP END PARALLEL DO
+         !endif
+
+         !if (imau_blanking) then
+         !!$OMP PARALLEL DO PRIVATE(iblock)
+         !   do iblock = 1, nblocks_clinic
+         !      where (BLK_MASK(:,:,iblock,1) > c0)
+         !         RUNOFF(:,:,iblock) = c0
+         !      endwhere
+         !   enddo
+         !!$OMP END PARALLEL DO
+         !endif
+
+      case default
+
+         if (my_task == master_task) then
+            write(stdout,*) 'DEBUG using IMAU private code, but not enabled through namelist'
+         endif
+
+      end select
+
+! -----------------------------------------------------
+! add IMAU freshwater fluxes from file to the model fields
+! -----------------------------------------------------
+
+      ! MK original function when running hysteresis.
+      ! start with hosing_factor 1, then 2 etc!
+      ! hosing_factor = thour00 / (24 * 365) - 2049   ! run starts in year 2050 restartfile of x1_SAMOC_flux
+
+      ! LE Constant value for TAMS and preTAMS
+      hosing_factor = imau_hosing_factor
+
+      if (my_task == master_task) then
+        ! do not write out every timestep
+        if (MOD(thour00, real(24 * 365)) == 0.0) then
+          write(stdout,*) 'MIKE: imau_data_time = ',imau_data_time
+          write(stdout,*) 'MIKE: thour00 = ',thour00
+          write(stdout,*) 'MIKE: hosing_factor = ',hosing_factor
+        endif
+      endif
+!/MK
+
 !-----------------------------------------------------------------------
 !
 !  compute forcing terms for each block
@@ -1481,6 +2050,35 @@ end subroutine read_sfwf_namelist
       if (runoff .or. runoff_and_flux) then
          SFWF_COMP(:,:,iblock,sfwf_comp_runoff) = &
          SFWF_DATA(:,:,iblock,sfwf_data_runoff,now)*precip_fact
+!MK
+         ! -----------------------------------------------------
+         ! accumulate original runoff tavg diagnostics if requested
+         ! -----------------------------------------------------
+         if (tavg_requested(tavg_RUNOFF_ORIG)) then
+           call accumulate_tavg_field( &
+                 SFWF_COMP(:,:,iblock,sfwf_comp_runoff), tavg_RUNOFF_ORIG,iblock,1)
+         endif
+         ! -----------------------------------------------------
+         ! add IMAU freshwater perturbation fluxes from file to the runoff part
+         ! -----------------------------------------------------
+         !if (iblock == 1 ) then
+         !  write(stdout,*) 'MIKE: add IMAU freshwater perturbation fluxes from file to the runoff part'
+         !endif
+
+         SFWF_COMP(:,:,iblock,sfwf_comp_runoff) = &
+         SFWF_COMP(:,:,iblock,sfwf_comp_runoff) + &
+         IMAU_DATA(:,:,iblock,imau_data_sfwf,0) * hosing_factor 
+
+         ! -----------------------------------------------------
+         ! accumulate runoff tavg diagnostics if requested
+         ! -----------------------------------------------------
+
+         if (tavg_requested(tavg_RUNOFF)) then
+           call accumulate_tavg_field( &
+                 SFWF_COMP(:,:,iblock,sfwf_comp_runoff), tavg_RUNOFF,iblock,1)
+         endif
+
+!/MK
       endif
 
       !*** weak salinity restoring term
