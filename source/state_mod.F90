@@ -872,9 +872,9 @@
    case (state_type_mwjf)
 
       tmin =  -2.0_r8  ! limited   on the low  end
-      tmax = 999.0_r8  ! unlimited on the high end
+      tmax =  40.0_r8  ! unlimited on the high end
       smin =   0.0_r8  ! limited   on the low  end
-      smax = 0.999_r8  ! unlimited on the high end
+      smax = 0.042_r8  ! unlimited on the high end
 
 !-----------------------------------------------------------------------
 !
