@@ -147,8 +147,10 @@
    real (r8), public ::          &
       lat_aux_begin,        & ! beginning latitude for the auxilary
                               !    grid (degrees north)
-      lat_aux_end             ! ending latitude for the auxilary
+      lat_aux_end,          & ! ending latitude for the auxilary
                               !    grid (degrees north)
+      southern_lat            ! South border of the atl. mask
+
 
    integer (int_kind) :: &
       amoc_strength_target_lat_idx, &   ! Latitude of the target AMOC scalar probe
@@ -2136,9 +2138,10 @@ subroutine init_tavg
     !  same as module
 
     integer (int_kind) ::   &
-      i,j,k,ig,igp1,jg,n,right_idx,iblock,        & ! loop indices
+      i,j,k,jj,n,right_idx,iblock,        & ! loop indices
       nu,            &
-      ioerr
+      ioerr,         &
+      rec_length
 
     logical :: is_found
 
@@ -2200,84 +2203,16 @@ subroutine init_tavg
     endif
 
     !-------------------------------------------------------------------------
-    ! Build atlantic mask
-    allocate(ATLANTIC_MASK_LONG(n_lat_aux_grid))
-    allocate(ATLANTIC_MASK_LONG_MIN(n_lat_aux_grid))
-    allocate(ATLANTIC_MASK_LONG_MAX(n_lat_aux_grid))
-
-    ! Read mask file data
-    call get_unit(nu)
-    if (my_task == master_task) then
-       open(nu,file=atlantic_mask_file,status='old',form='formatted', iostat=ioerr)
-    endif
-    call broadcast_scalar(ioerr, master_task)
-    if (ioerr /= 0) call exit_POP(sigAbort, 'Error opening atlantic_mask_file')
-
-    if (my_task == master_task) then
-       if (ioerr == 0) then ! successful open
-          grid_read: do j = 1, n_lat_aux_grid
-             read(nu,*,iostat=ioerr) ATLANTIC_MASK_LONG(j), ATLANTIC_MASK_LONG_MIN(j), ATLANTIC_MASK_LONG_MAX(j)
-             if (ioerr /= 0) exit grid_read
-          end do grid_read
-          close(nu)
-       endif
-    endif
-    call release_unit(nu)
-
-    call broadcast_scalar(ioerr, master_task)
-    if (ioerr /= 0) call exit_POP(sigAbort, 'Error reading atlantic_mask_file')
-
-    call broadcast_array(ATLANTIC_MASK_LONG, master_task)
-    call broadcast_array(ATLANTIC_MASK_LONG_MIN, master_task)
-    call broadcast_array(ATLANTIC_MASK_LONG_MAX, master_task)
-
+    ! Read the binary file provided by M. Kliphuis
+    !-------------------------------------------------------------------------
     if (my_task == master_task) then
       allocate (ATLANTIC_MASK_LAT_AUX(nx_global,ny_global) )
-    endif
+      inquire (iolength=rec_length) ATLANTIC_MASK_LAT_AUX
+      open(44,file=atlantic_mask_file,access='direct',form='unformatted', &
+           recl=rec_length,status='unknown')
+      read(44,rec=1) ATLANTIC_MASK_LAT_AUX
+      close(44)
 
-    !$OMP PARALLEL DO PRIVATE(iblock, this_block)
-    do iblock = 1, nblocks_clinic
-       this_block = get_block(blocks_clinic(iblock),iblock)
-
-       do j=this_block%jb,this_block%je
-          do i=this_block%ib,this_block%ie
-             long_deg = TLON(i,j,iblock) * radian
-             lat_deg = TLAT(i,j,iblock) * radian
-             if (long_deg > 180.0) then
-                long_deg = long_deg - 360.0
-             endif
-
-             if (lat_deg < ATLANTIC_MASK_LONG(1)) then
-               right_idx = 1
-             else if (lat_deg > ATLANTIC_MASK_LONG(n_lat_aux_grid)) then
-               right_idx = n_lat_aux_grid-1
-             else
-               do n = 1, n_lat_aux_grid-1
-                 if (lat_deg >= ATLANTIC_MASK_LONG(n) .and. &
-                     lat_deg < ATLANTIC_MASK_LONG(n+1) ) then
-                    right_idx = n
-                    exit
-                 endif
-               enddo
-             endif
-
-             if (KMT(i,j,iblock) > 0 .and. &
-                 lat_deg >= ATLANTIC_MASK_LONG(1) .and. &
-                 lat_deg < ATLANTIC_MASK_LONG(n_lat_aux_grid) .and. &
-                 long_deg >= ATLANTIC_MASK_LONG_MIN(right_idx) .and. &
-                 long_deg <= ATLANTIC_MASK_LONG_MAX(right_idx+1))  then
-                ATLANTIC_MASK_LAT(i,j,iblock) = 1
-             else
-                ATLANTIC_MASK_LAT(i,j,iblock) = 0
-             endif
-          enddo
-       enddo
-    enddo
-
-    call gather_global (ATLANTIC_MASK_LAT_AUX(:,:), ATLANTIC_MASK_LAT(:,:,:),&
-                        master_task,distrb_clinic)
-
-    if (my_task == master_task) then
       !-------------------------------------------------------------------------
       ! Get data for final AMOC strength estimate location
       amoc_strength_target_lat_idx = -1
@@ -2302,13 +2237,15 @@ subroutine init_tavg
       lat_aux_region_start = 0
 
       do j = 1, ny_global
-        if (any(ATLANTIC_MASK_LAT_AUX(:,j) == 1)) then
+        if (any(ATLANTIC_MASK_LAT_AUX(:,j) /= 0)) then
           lat_aux_region_start = j
           exit
         endif
       enddo
 
-      WRITE(*,*) " Southern j-index of the AMOC region ", lat_aux_region_start
+      WRITE(*,*) " Southern j-index of the AMOC region: ", lat_aux_region_start
+      WRITE(*,*) " Southern most lat: ", 0.5*(TLATD_G(1,lat_aux_region_start) + &
+                                              TLATD_G(1,lat_aux_region_start-1))
     endif
 
     !-----------------------------------------------------------------------
@@ -2410,7 +2347,7 @@ subroutine init_tavg
           do i = 1, nx_global
             if ( TLATD_G(i,j) >= lat_aux_edge(n-1) .and.  &
                  TLATD_G(i,j) <  lat_aux_edge(n  ) .and.  &
-                 ATLANTIC_MASK_LAT_AUX(i,j) == 1 ) then
+                 ATLANTIC_MASK_LAT_AUX(i,j) /= 0 ) then
               do k = 1, km
                 TAVG_MOC_G(n,k,1) = TAVG_MOC_G(n,k,1) + WORK1_G(i,j,k)
               enddo
@@ -2438,12 +2375,12 @@ subroutine init_tavg
     enddo
 
     if ( my_task == master_task )  then
-      moc_s = c0
+      moc_s(:,:) = c0
 
       ! Compute sourthern boundary integral of V_E
       j = lat_aux_region_start
       do i = 1, nx_global
-        if (ATLANTIC_MASK_LAT_AUX(i,j) == 1) then
+        if (ATLANTIC_MASK_LAT_AUX(i,j) /= 0) then
           do k = 1, km
             moc_s(k,1) = moc_s(k,1) + WORK1_G(i,j,k)
           enddo ! k
