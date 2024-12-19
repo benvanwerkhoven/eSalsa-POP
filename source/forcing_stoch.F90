@@ -28,6 +28,7 @@ module forcing_stoch
   implicit none
 
   real (r8) :: sf_fwf_fraction = 0.0
+  real (r8) :: sf_hf_fraction = 0.0
 
   ! Data for ERA5 forcing
   ! Dimensions
@@ -234,6 +235,9 @@ contains
         ! Generate a forcing for next month (new), using new set of random numbers
         call generate_new_forcing(n_eof_ep, lag_max_ep, 0, rnd_ep, hist_ep, &
                                   lags_ep, rho_ep, sig_ep, eof_ep, stoch_data_ep)
+
+        ! Scaling factor, use fraction to avoid duplication
+        sf_fwf_fraction = 1.0
       end select
     endif
 
@@ -290,6 +294,9 @@ contains
         ! Generate a forcing for next month (new), using new set of random numbers
         call generate_new_forcing(n_eof_t2m, lag_max_t2m, 0, rnd_t2m, hist_t2m, &
                                   lags_t2m, rho_ep, sig_t2m, eof_t2m, stoch_data_t2m)
+
+        ! Scaling factor, use fraction to avoid duplication
+        sf_hf_fraction = 1.0
       end select
     endif
 
@@ -321,7 +328,7 @@ contains
     ! Add stochastic forcing to baseline forcing
     !$OMP PARALLEL DO PRIVATE(iblock)
     do iblock = 1, nblocks_clinic
-       STF(:,:,2,iblock) = STF(:,:,2,iblock) + STF_stoch(:,:,2,iblock)
+       STF(:,:,2,iblock) = STF(:,:,2,iblock) + STF_stoch(:,:,2,iblock) * sf_fwf_fraction
     enddo
     !$OMP END PARALLEL DO
 
@@ -400,7 +407,7 @@ contains
     ! Add stochastic air temperature to baseline value
     !$OMP PARALLEL DO PRIVATE(iblock)
     do iblock = 1, nblocks_clinic
-       AST(:,:,iblock) = AST(:,:,iblock) + STF_stoch(:,:,1,iblock)
+       AST(:,:,iblock) = AST(:,:,iblock) + STF_stoch(:,:,1,iblock) * sf_hf_fraction
     enddo
     !$OMP END PARALLEL DO
 
