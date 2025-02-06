@@ -38,7 +38,8 @@
    public :: check_status, &
              read_AR_netcdf_file_header, &
              read_AR_netcdf_file_data, &
-             read_EOF_netcdf_file
+             read_EOF_netcdf_file, &
+             read_era5nig_netcdf_file
 
 !EOP
 !BOC
@@ -499,6 +500,158 @@
    endif
 
  end subroutine read_EOF_netcdf_file
+
+ subroutine read_era5nig_netcdf_file(data_file, &
+                                     data_l, data_c)
+
+   implicit none
+
+   type (datafile), intent (inout)  :: data_file
+   integer (i4), intent(in) ::  &
+     data_l
+
+   real(r8), dimension(nx_block,ny_block,max_blocks_clinic,data_l), intent(out) :: data_c
+
+   ! local variables
+   real(r8), dimension(:,:), allocatable :: data_gbl
+   real(r8), dimension(:,:), allocatable :: data_gbl_flipped
+
+   character (char_len) :: &
+      path            ! filename to read
+
+   character (80) :: &
+      work_line,     &! temporary to use for parsing file lines
+      att_name        ! temporary to use for attribute names
+
+   integer (i4) ::  &
+      iostat,       &! status flag
+      ncid,         &! netCDF file id
+      dimid,        &! netCDF dimension id
+      ndim, nvar,natt,k_un, k_form, k, xtype, e, i,j, &
+      nsize,        &! size parameter returned by inquire function
+      n,            &! loop index
+      itype,        &! netCDF data type
+      att_ival,     &! netCDF data type
+      num_atts       ! number of global attributes
+
+    integer (i4), allocatable, dimension(:) :: dimids
+
+    integer (i4), dimension(20) :: &
+      ncids          ! netCDF group ids
+
+
+   logical (log_kind) :: &
+      att_lval           ! temp space for logical attribute
+
+   real (r4) ::     &
+      att_rval       ! temp space for real attribute
+
+   real (r8) ::     &
+      att_dval       ! temp space for double attribute
+
+   logical (log_kind) :: &
+      attrib_error        ! error flag for reading attributes
+
+   if (my_task == master_task) then
+     allocate(data_gbl(nx_global,ny_global))
+     allocate(data_gbl_flipped(ny_global,nx_global))
+   endif
+
+!-----------------------------------------------------------------------
+!
+!  set the readonly flag in the data file descriptor
+!
+!-----------------------------------------------------------------------
+
+   data_file%readonly = .true.
+
+!-----------------------------------------------------------------------
+!
+!  open the netCDF file
+!
+!-----------------------------------------------------------------------
+
+   iostat = nf90_noerr
+   data_file%id = 0
+
+   if (my_task == master_task) then
+      path = trim(data_file%full_name)
+      iostat = nf90_open(path=trim(path), mode=nf90_nowrite, ncid=ncid)
+      call check_status(iostat)
+   endif
+
+   call broadcast_scalar(iostat, master_task)
+   if (iostat /= nf90_noerr) then
+      write(stdout,*) 'filename = ', trim(data_file%full_name)
+      call exit_POP(sigAbort,'error opening netCDF file for reading')
+   endif
+
+   call broadcast_scalar(ncid, master_task)
+   data_file%id(1) = ncid
+
+   ! Get and check dimension data
+   if (my_task == master_task) then
+     iostat = nf90_inquire(ncid, nDimensions=ndim, nVariables=nvar, nAttributes=natt)
+     do k = 1, ndim
+       iostat = nf90_inquire_dimension(ncid, k, att_name, att_ival )
+       if (trim(att_name) == "month_d") then
+         if (att_ival /= data_l) then
+           write(*,*) "Error monthly data length ", att_ival, " do not match ", data_l
+         endif
+       else if (trim(att_name) == "lon_d") then
+         if (att_ival /= nx_global) then
+           write(*,*) "Error data lon length ", att_ival, " do not match sim. one ", nx_global
+         endif
+       else if (trim(att_name) == "lat_d") then
+         if (att_ival /= ny_global) then
+           write(*,*) "Error data lat length ", att_ival, " do not match sim. one ", ny_global
+         endif
+       endif
+     enddo
+
+     allocate(dimids(1:ndim))
+   endif
+
+   call broadcast_scalar(nvar, master_task)
+
+   do k = 1, nvar
+     if (my_task == master_task) then
+       iostat = nf90_inquire_variable(ncid, k, att_name, xtype, ndim, dimids, natt )
+     endif
+     do e = 1, data_l
+       if (my_task == master_task) then
+         iostat = nf90_get_var(ncid, k, data_gbl_flipped, start=(/ 1,1,e /), count=(/ny_global,nx_global,1/))
+         do i = 1, ny_global
+           do j = 1, nx_global
+             data_gbl(j,i) = data_gbl_flipped(i,j)
+           enddo
+         enddo
+       endif
+       call broadcast_scalar(iostat, master_task)
+
+       if (iostat /= nf90_noerr) then
+         if (my_task == master_task) then
+           write(*,*) "Error while loading EOF data "
+         endif
+         exit
+       else
+         call scatter_global(data_c(:,:,:,e), &
+                             data_gbl, master_task, distrb_clinic, &
+                             field_loc_center, field_type_scalar)
+       endif
+     enddo
+   enddo
+
+   call broadcast_scalar(iostat, master_task)
+   if (iostat /= nf90_noerr) &
+      call exit_POP(sigAbort, &
+                    'error while reading EOF data file')
+
+   if (my_task == master_task) then
+     deallocate(data_gbl,data_gbl_flipped)
+   endif
+
+ end subroutine read_era5nig_netcdf_file
 
 !***********************************************************************
  end module io_netcdf_stoch
