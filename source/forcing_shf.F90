@@ -35,7 +35,7 @@
 
    public :: read_shf_namelist, &
              init_shf,      &
-             set_shf        
+             set_shf
 
 ! !PUBLIC DATA MEMBERS:
 
@@ -129,12 +129,12 @@
       shf_restore_rtau,  &
       shf_weak_restore,  &! heat flux weak restoring max time scale
       shf_strong_restore,&! heat flux strong restoring max time scale
-      shf_strong_restore_ms  
+      shf_strong_restore_ms
 
    integer (int_kind) ::     &
       shf_interp_order,      &!  order of temporal interpolation
       shf_data_time_min_loc, &!  time index for first shf_data point
-      shf_data_num_fields      
+      shf_data_num_fields
 
    integer (int_kind), public ::     &
       shf_num_comps
@@ -169,7 +169,7 @@
       shf_formulation
 
 
-!  the following is necessary for partially-coupled 
+!  the following is necessary for partially-coupled
 !     luse_cpl_ifrac  = .T.     use fractional ice coverage
 !                               sent by the coupler from the (dummy) ice,
 !                       .F.     use fractional ice coverage based on the
@@ -602,11 +602,11 @@ end subroutine read_shf_namelist
                                REGION_MASK(:,:,iblock) <= 0)
       end do
       !$OMP END PARALLEL DO
-   
+
    else
       no_region_mask = .true.
    endif
-  
+
 !-----------------------------------------------------------------------
 !
 !  convert interp_type to corresponding integer value.
@@ -677,7 +677,7 @@ end subroutine read_shf_namelist
       shf_data_next = never
       shf_data_update = never
       shf_interp_freq = 'never'
-   
+
 !-----------------------------------------------------------------------
 !
 !  heat flux for benchmark, Bernsen, 2010
@@ -693,9 +693,9 @@ end subroutine read_shf_namelist
          select case (shf_formulation)
          case ('restoring')
 !~             SHF_DATA(:,:,iblock,shf_data_sst,1) = &
-!~                25.0_r8*(c1 - sin(ULAT(:,:,iblock))) 
+!~                25.0_r8*(c1 - sin(ULAT(:,:,iblock)))
             SHF_DATA(:,:,iblock,shf_data_sst,1) = &
-               25.0_r8*( cos(ULAT(:,:,iblock))) 
+               25.0_r8*( cos(ULAT(:,:,iblock)))
          end select
       end do ! block loop
       !$OMP END PARALLEL DO
@@ -1173,7 +1173,7 @@ end subroutine read_shf_namelist
             SHF_DATA (:,:,iblock,shf_data_sst,n)     = &
             TEMP_DATA(:,:,n,iblock,shf_data_sst)
             SHF_DATA (:,:,iblock,shf_data_tair,n)    = &
-            TEMP_DATA(:,:,n,iblock,shf_data_tair)    
+            TEMP_DATA(:,:,n,iblock,shf_data_tair)
             SHF_DATA (:,:,iblock,shf_data_qair,n)    = &
             TEMP_DATA(:,:,n,iblock,shf_data_qair)
             SHF_DATA (:,:,iblock,shf_data_qsw,n)     = &
@@ -1284,7 +1284,7 @@ end subroutine read_shf_namelist
             SHF_DATA (:,:,iblock,shf_data_flux,n) = &
             TEMP_DATA(:,:,n,iblock,shf_data_flux)
          end do
-         end do     
+         end do
          !$OMP END PARALLEL DO
 
          call destroy_io_field(io_sst)
@@ -2226,11 +2226,11 @@ end subroutine read_shf_namelist
 
 ! !DESCRIPTION:
 !  Calculates weak and strong restoring components of surface heat flux
-!  for partially-coupled formulation. These components will later be 
+!  for partially-coupled formulation. These components will later be
 !  added to shf_comp_cpl component in set_coupled_forcing
 !  (forcing_coupled) to form the total surface heat flux.
 !
-!  The only forcing dataset (on t-grid) is 
+!  The only forcing dataset (on t-grid) is
 !  shf_data_sst, restoring SST
 !
 !
@@ -2238,10 +2238,10 @@ end subroutine read_shf_namelist
 !  same as module
 
 ! !INPUT PARAMETERS:
- 
+
    integer (int_kind), intent(in) :: &
       time_dim
- 
+
 
 !EOP
 !BOC
@@ -2331,7 +2331,7 @@ end subroutine read_shf_namelist
                              (SHF_DATA(:,:,iblock,shf_data_sst,now) - &
                               TRACER(:,:,1,1,curtime,iblock))
       endwhere
- 
+
 !----------------------------------------------------------------------
 !
 !     convert to model units: (W/m^2) to (C*cm/s)
@@ -2339,8 +2339,8 @@ end subroutine read_shf_namelist
 !----------------------------------------------------------------------
 
       SHF_COMP(:,:,iblock,shf_comp_wrest) =               &
-      SHF_COMP(:,:,iblock,shf_comp_wrest)*hflux_factor                    
- 
+      SHF_COMP(:,:,iblock,shf_comp_wrest)*hflux_factor
+
       SHF_COMP(:,:,iblock,shf_comp_srest) =               &
       SHF_COMP(:,:,iblock,shf_comp_srest)*hflux_factor
 
@@ -2651,7 +2651,7 @@ end subroutine read_shf_namelist
 !  same as module
 
 ! !INPUT PARAMETERS:
- 
+
    integer (int_kind), intent(in) :: &
       now
 
@@ -2725,6 +2725,7 @@ end subroutine read_shf_namelist
 !
 ! !REVISION HISTORY:
 !  same as module
+   use forcing_stoch, only: append_stoch_temp_shf
 
 ! !INPUT PARAMETERS:
 
@@ -2736,6 +2737,10 @@ end subroutine read_shf_namelist
    real (r8), dimension(nx_block,ny_block,nt,max_blocks_clinic), &
       intent(inout) :: &
       STF    !  surface tracer fluxes at current timestep
+
+! LOCAL
+   real (r8), dimension(nx_block,ny_block,max_blocks_clinic) :: &
+      AST_TEMP           ! Temporary Air @ SST holder to handle stochastic value
 
 !EOP
 !BOC
@@ -2801,6 +2806,19 @@ end subroutine read_shf_namelist
 !----------------------------------------------------------------------
    call ocean_weights(now)
 
+!----------------------------------------------------------------------
+!
+!  Stochastic forcing for normal-year+flux takes the form of temperature
+!
+!----------------------------------------------------------------------
+
+   do iblock = 1, nblocks_clinic
+     AST_TEMP(:,:,iblock) = SHF_DATA(:,:,iblock,shf_data_tair,now)
+   enddo
+   ! Note: STF is empty, but needed in append_stoch_temp_shf
+   ! because it interface with various forcing models.
+   call append_stoch_temp_shf(STF, AST_TEMP)
+
 
 !----------------------------------------------------------------------
 !
@@ -2820,7 +2838,7 @@ end subroutine read_shf_namelist
       call sen_lat_flux(                                            &
          SHF_DATA(:,:,iblock,shf_data_windspd,now), windspd_height, &
          TRACER(:,:,1,1,curtime,iblock),                            &
-         SHF_DATA(:,:,iblock,shf_data_tair,now),    tair_height,    &
+         AST_TEMP(:,:,iblock),    tair_height,    &
          SHF_DATA(:,:,iblock,shf_data_qair,now),    qair_height,    &
          T0_Kelvin, SHF_COMP(:,:,iblock,shf_comp_qsens),            &
                     SHF_COMP(:,:,iblock,shf_comp_qlat))
