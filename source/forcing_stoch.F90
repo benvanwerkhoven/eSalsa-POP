@@ -30,7 +30,10 @@ module forcing_stoch
   real (r8) :: sf_fwf_fraction = 0.0
   real (r8) :: sf_hf_fraction = 0.0
 
+  !--------------------------------------------------------------------------
   ! Data for ERA5 forcing
+  !--------------------------------------------------------------------------
+  ! Formulation: ERA5-PC-AR
   ! Dimensions
   integer (int_kind) :: &
     n_eof_ep,                   &! Number of EOF for E-P forcing
@@ -72,6 +75,34 @@ module forcing_stoch
     stoch_data_ep,             &
     stoch_data_t2m
 
+  character (char_len) :: &
+    stoch_era5pcar_spinupfile,  &! Autoregression datafile for E-P
+    EOF_ep_filename,            &! EOF datafile for E-P
+    EOF_t_filename               ! EOF datafile for temperature
+
+  real(r8), allocatable, dimension(:) :: &
+    rnd_ep,                     &! Latest set of random number for E-P
+    rnd_t2m                      ! Latest set of random number for T
+
+  !--------------------------------------------------------------------------
+  ! Formulation: ERA5-NIG
+  ! 12 months of stochastic fields
+  real (r8), allocatable, dimension(:,:,:,:) :: &
+    monthly_stoch_data_ep,         &! Monthly stoch. fields for E-P
+    monthly_stoch_data_t2m          ! Monthly stoch. fields for T@2m
+
+  integer (int_kind) :: &
+    cur_sf_data_year_ep,           &! Year the currently loaded data were loaded for E-P
+    cur_sf_data_year_t2m            ! Year the currently loaded data were loaded for T@2m
+
+  character (char_len), public :: &
+    stoch_era5nig_filename_prefix   ! Prefix for yearly ERA5-NIG stoch data file
+
+  !--------------------------------------------------------------------------
+  ! General data
+  logical :: stochastic_forcing_fwf
+  logical :: stochastic_forcing_hf
+
   ! Timing data for updating stochastic fields
   real (r8), dimension(1:12) :: &
     sf_fwf_time,                &
@@ -92,44 +123,34 @@ module forcing_stoch
     sf_fwf_data_update_idx,     &
     sf_hf_data_update_idx
 
-  real(r8), allocatable, dimension(:) :: &
-    rnd_ep,                     &! Latest set of random number for E-P
-    rnd_t2m                      ! Latest set of random number for T
-
-  logical :: stochastic_forcing_fwf
-  logical :: stochastic_forcing_hf
-
   character (char_len) :: &
     sf_fwf_formulation,         &! Formulation of the freshwater stoch forcing
     sf_hf_formulation            ! Formulation of the heat stoch forcing
 
-  character (char_len) :: &
-    ARdata_ep_filename,         &! Autoregression datafile for E-P
-    ARdata_t_filename,          &! Autoregression datafile for temperature
-    EOF_ep_filename,            &! EOF datafile for E-P
-    EOF_t_filename               ! EOF datafile for temperature
 
 contains
 
   subroutine read_stoch_forcing_namelist
     implicit none
     integer(int_kind) :: nml_error ! namelist error flag
-    namelist /forcing_stoch/ stochastic_forcing_fwf, stochastic_forcing_hf,  &
-                              sf_fwf_formulation, sf_hf_formulation,            &
-                              ARdata_ep_filename, ARdata_t_filename,            &
-                              EOF_ep_filename, EOF_t_filename,                  &
-                              sf_fwf_fraction
+    namelist /forcing_stoch/ stochastic_forcing_fwf, stochastic_forcing_hf,     &
+                             sf_fwf_formulation, sf_hf_formulation,             &
+                             stoch_era5pcar_spinupfile,                         &
+                             EOF_ep_filename, EOF_t_filename,                   &
+                             sf_fwf_fraction, sf_hf_fraction,                   &
+                             stoch_era5nig_filename_prefix
 
     ! Set some defaults
-    stochastic_forcing_fwf   = .false.
-    stochastic_forcing_hf    = .false.
-    sf_fwf_formulation        = 'baseline-frac'
-    sf_hf_formulation         = 'baseline-frac'
-    ARdata_ep_filename        = 'unknown'
-    ARdata_t_filename         = 'unknown'
-    EOF_ep_filename           = 'unknown'
-    EOF_t_filename            = 'unknown'
-    sf_fwf_fraction           = 0.0
+    stochastic_forcing_fwf        = .false.
+    stochastic_forcing_hf         = .false.
+    sf_fwf_formulation            = 'baseline-frac'
+    sf_hf_formulation             = 'baseline-frac'
+    stoch_era5pcar_spinupfile     = 'unknown'
+    EOF_ep_filename               = 'unknown'
+    EOF_t_filename                = 'unknown'
+    sf_fwf_fraction               = 0.0
+    sf_hf_fraction                = 0.0
+    stoch_era5nig_filename_prefix = 'unknown'
 
     if (my_task == master_task) then
        open (nml_in, file=nml_filename, status='old',iostat=nml_error)
@@ -149,15 +170,16 @@ contains
       call exit_POP(sigAbort,'ERROR reading forcing_stoch')
     endif
 
-    call broadcast_scalar(stochastic_forcing_fwf, master_task)
-    call broadcast_scalar(stochastic_forcing_hf,  master_task)
-    call broadcast_scalar(sf_fwf_formulation,     master_task)
-    call broadcast_scalar(sf_hf_formulation,      master_task)
-    call broadcast_scalar(ARdata_ep_filename,     master_task)
-    call broadcast_scalar(ARdata_t_filename,      master_task)
-    call broadcast_scalar(EOF_ep_filename,        master_task)
-    call broadcast_scalar(EOF_t_filename,         master_task)
-    call broadcast_scalar(sf_fwf_fraction,        master_task)
+    call broadcast_scalar(stochastic_forcing_fwf,        master_task)
+    call broadcast_scalar(stochastic_forcing_hf,         master_task)
+    call broadcast_scalar(sf_fwf_formulation,            master_task)
+    call broadcast_scalar(sf_hf_formulation,             master_task)
+    call broadcast_scalar(stoch_era5pcar_spinupfile,     master_task)
+    call broadcast_scalar(EOF_ep_filename,               master_task)
+    call broadcast_scalar(EOF_t_filename,                master_task)
+    call broadcast_scalar(sf_fwf_fraction,               master_task)
+    call broadcast_scalar(sf_hf_fraction,                master_task)
+    call broadcast_scalar(stoch_era5nig_filename_prefix, master_task)
 
   end subroutine read_stoch_forcing_namelist
 
@@ -174,7 +196,10 @@ contains
     real(r8), dimension(:), allocatable :: rnd_u1, rnd_u2
     integer (int_kind) :: seed_l
     integer (int_kind), dimension(:), allocatable:: rnd_seed
-    type (datafile) :: ARfile, EOFfile
+    type (datafile) :: ARfile, EOFfile, DATAfile
+    character (char_len) :: &
+      stoch_yearlydata_ep, &
+      stoch_yearlydata_t2m
 
     ! Set forcing to zero
     STF_stoch(:,:,:,:) = c0
@@ -187,13 +212,31 @@ contains
 
     if (stochastic_forcing_fwf) then
       select case (sf_fwf_formulation)
-      case ('ERA5-Data')
+      case ('ERA5-NIG')
+
+        ! Current year data file
+        write(stoch_yearlydata_ep,*) TRIM(stoch_era5nig_filename_prefix), "_", TRIM(cyear), "_EP.nc"
         if (my_task == master_task) then
-          write(*,*) "Reading AR E-P data from ", ARdata_ep_filename
+          write(*,*) "Reading E-P data from ", TRIM(stoch_yearlydata_ep)
+        endif
+
+        allocate(monthly_stoch_data_ep(nx_block,ny_block,max_blocks_clinic,12))
+
+        ! Stash away the year we load the current data
+        cur_sf_data_year_ep = iyear
+
+        DATAfile = construct_file("nc", &
+                                  full_name=trim(stoch_yearlydata_ep))
+
+        call read_era5nig_netcdf_file(DATAfile, 12, monthly_stoch_data_ep)
+
+      case ('ERA5-PC-AR')
+        if (my_task == master_task) then
+          write(*,*) "Reading AR E-P data from ", stoch_era5pcar_spinupfile
         endif
 
         ARfile = construct_file("nc", &
-                                full_name=trim(ARdata_ep_filename))
+                                full_name=trim(stoch_era5pcar_spinupfile))
         call read_AR_netcdf_file_header(ARfile,"ep",n_eof_ep,lag_max_ep)
 
         allocate(lags_ep(1:n_eof_ep))
@@ -243,18 +286,32 @@ contains
 
     if (stochastic_forcing_hf) then
       select case (sf_hf_formulation)
-      case ('ERA5-Data')
+      case ('ERA5-NIG')
+
+        ! Current year data file
+        write(stoch_yearlydata_t2m,*) TRIM(stoch_era5nig_filename_prefix), "_", TRIM(cyear), "_T2M.nc"
         if (my_task == master_task) then
-          write(*,*) "Reading AR t2m data from ", ARdata_t_filename
+          write(*,*) "Reading t2m data from ", TRIM(stoch_yearlydata_t2m)
+        endif
+
+        allocate(monthly_stoch_data_t2m(nx_block,ny_block,max_blocks_clinic,12))
+
+        ! Stash away the year we load the current data
+        cur_sf_data_year_t2m = iyear
+
+        DATAfile = construct_file("nc", &
+                                  full_name=trim(stoch_yearlydata_t2m))
+
+        call read_era5nig_netcdf_file(DATAfile, 12, monthly_stoch_data_t2m)
+
+      case ('ERA5-PC-AR')
+        if (my_task == master_task) then
+          write(*,*) "Reading AR t2m data from ", stoch_era5pcar_spinupfile
         endif
 
         ARfile = construct_file("nc", &
-                                full_name=trim(ARdata_t_filename))
+                                full_name=trim(stoch_era5pcar_spinupfile))
         call read_AR_netcdf_file_header(ARfile,"t2m",n_eof_t2m,lag_max_t2m)
-
-        if (my_task == master_task) then
-          write(*,*) n_eof_t2m, lag_max_t2m
-        endif
 
         allocate(lags_t2m(1:n_eof_t2m))
         allocate(sig_t2m(1:n_eof_t2m))
@@ -354,9 +411,9 @@ contains
       return
     endif
 
-    ! The ERA5-Data return a stochastic temperature
+    ! The ERA5-PC-AR return a stochastic temperature
     ! while baseline-frac, return a flux -> exit with the former
-    if (sf_fwf_formulation == 'ERA5-Data') then
+    if (sf_hf_formulation /= 'baseline-frac') then
       return
     endif
 
@@ -366,7 +423,7 @@ contains
    ! Add stochastic forcing to baseline forcing
    !$OMP PARALLEL DO PRIVATE(iblock)
    do iblock = 1, nblocks_clinic
-      STF(:,:,1,iblock) = STF(:,:,1,iblock) + STF_stoch(:,:,1,iblock)
+      STF(:,:,1,iblock) = STF(:,:,1,iblock) + STF_stoch(:,:,1,iblock) * sf_hf_fraction
    enddo
    !$OMP END PARALLEL DO
 
@@ -395,9 +452,9 @@ contains
       return
     endif
 
-    ! The ERA5-Data return a stochastic temperature
+    ! The ERA5-NIG return a stochastic temperature
     ! while baseline-frac, return a flux -> exit with the latest
-    if (sf_fwf_formulation == 'baseline-frac') then
+    if (sf_hf_formulation == 'baseline-frac') then
       return
     endif
 
@@ -435,6 +492,10 @@ contains
        STF_stoch! surface tracer fluxes for all tracers
 
     ! LOCAL
+    type (datafile) :: DATAfile
+    character (char_len) :: &
+      stoch_yearlydata_ep
+
     type(block) :: &
        this_block  ! block info for current block
 
@@ -449,7 +510,7 @@ contains
        surf_lcl,&          ! Covered surface (local)
        surf                ! Covered surface (global)
 
-    real (r8) :: pold, pnew! Interpolation coefficients for ERA5-Data forcing
+    real (r8) :: pold, pnew! Interpolation coefficients for ERA5-NIG forcing
 
     select case (sf_fwf_formulation)
     case ('baseline-frac')
@@ -503,7 +564,7 @@ contains
                   TLAT(i,j,iblock) >= 0.26179939 .and. &
                   TLAT(i,j,iblock) <= 1.22173048 .and. &
                   TLON(i,j,iblock) >= 4.53785606)  then
-                  STF_stoch(i,j,2,iblock) = sf_fwf_fraction * (STF_stoch(i,j,2,iblock) - stf_int)
+                  STF_stoch(i,j,2,iblock) = (STF_stoch(i,j,2,iblock) - stf_int)
                   stf_int_lcl = stf_int_lcl + TAREA(i,j,iblock) * 1.0e-10_r8 * STF_stoch(i,j,2,iblock)
                else
                   STF_stoch(i,j,2,iblock) = c0
@@ -515,7 +576,37 @@ contains
 
       stf_int = global_sum(stf_int_lcl, distrb_clinic)
 
-    case ('ERA5-Data')
+    case ('ERA5-NIG')
+      ! Check if we need to load new data for the new year
+      if (iyear /= cur_sf_data_year_ep ) then
+        write(stoch_yearlydata_ep,*) TRIM(stoch_era5nig_filename_prefix), "_", TRIM(cyear), "_EP.nc"
+        if (my_task == master_task) then
+          write(*,*) "Reading E-P new data from ", stoch_yearlydata_ep
+        endif
+
+        ! Stash away the year we load the current data
+        cur_sf_data_year_ep = iyear
+
+        DATAfile = construct_file("nc", &
+                                  full_name=trim(stoch_yearlydata_ep))
+
+        call read_era5nig_netcdf_file(DATAfile, 12, monthly_stoch_data_ep)
+      endif
+
+      ! No interpolation, just use current month data
+      ! Flip sign to go from Evap - Precep (atmosphere side) to P-E
+      ! Conversion: stoch data from noise in m/day. -> convert to kg/s/m^2
+      ! then to salf flux (CGS) msu*cm/s
+      ! using water density rho_fw (g/cm^3)
+      do iblock = 1, nblocks_clinic
+        STF_stoch(:,:,2,iblock) = - monthly_stoch_data_ep(:,:,iblock,imonth) / &
+                                  (3600 * 24) *        & ! m/day -> m/s
+                                  1.0e3_r8 * rho_fw  * & ! m/s * kg/m3 -> kg/s/m^2
+                                  salinity_factor        ! msu*cm/s
+      end do
+
+
+    case ('ERA5-PC-AR')
       ! Check if a new random field has to be generated
       if (thour00 >= sf_fwf_data_update) then
         ! Generate a forcing field from current data
@@ -536,14 +627,15 @@ contains
       ! Linear interpolation between an 'old' and 'new' monthly random fields.
       call get_linear_coeff(sf_fwf_time, pold, pnew)
 
+      ! Flip sign to go from Evap - Precep (atmosphere side) to P-E
       ! Conversion: stoch data from EOFs in m/s. -> convert to kg/s/m^2
       ! then to salf flux (CGS) msu*cm/s
       ! using water density rho_fw
       do iblock = 1, nblocks_clinic
-        STF_stoch(:,:,2,iblock) =  (pold * stoch_data_ep(:,:,iblock,2) + &
-                                    pnew * stoch_data_ep(:,:,iblock,1)) * &
-                                    1.0e3_r8 / rho_fw  * & ! kg/s/m^2
-                                    salinity_factor        ! msu*cm/s
+        STF_stoch(:,:,2,iblock) = - (pold * stoch_data_ep(:,:,iblock,2) + &
+                                     pnew * stoch_data_ep(:,:,iblock,1)) * &
+                                  1.0e3_r8 / rho_fw  * & ! kg/s/m^2
+                                  salinity_factor        ! msu*cm/s
       end do
     end select
 
@@ -574,14 +666,42 @@ contains
     integer (int_kind) :: &
        iblock              ! block loop index
 
+    type (datafile) :: DATAfile
+    character (char_len) :: &
+      stoch_yearlydata_t2m
+
     real (r8) :: pold, pnew! Interpolation coefficients for ERA5-Data forcing
 
-    select case (sf_fwf_formulation)
+    select case (sf_hf_formulation)
     case ('baseline-frac')      ! TODO
       do iblock = 1, nblocks_clinic
         STF_stoch(:,:,1,iblock) = c0
       end do
-    case ('ERA5-Data')
+
+    case ('ERA5-NIG')
+      ! Check if we need to load new data for the new year
+      if (iyear /= cur_sf_data_year_t2m ) then
+        write(stoch_yearlydata_t2m,*) TRIM(stoch_era5nig_filename_prefix), "_", TRIM(cyear), "_T2M.nc"
+        if (my_task == master_task) then
+          write(*,*) "Reading T2M new data from ", stoch_yearlydata_t2m
+        endif
+
+        ! Stash away the year we load the current data
+        cur_sf_data_year_t2m = iyear
+
+        DATAfile = construct_file("nc", &
+                                  full_name=trim(stoch_yearlydata_t2m))
+
+        call read_era5nig_netcdf_file(DATAfile, 12, monthly_stoch_data_t2m)
+      endif
+
+      ! No interpolation, just use current month data
+      ! Data is plain K
+      do iblock = 1, nblocks_clinic
+        STF_stoch(:,:,1,iblock) = monthly_stoch_data_t2m(:,:,iblock,imonth)
+      end do
+
+    case ('ERA5-PC-AR')
       ! Check if a new random field has to be generated
       if (thour00 >= sf_hf_data_update) then
         ! Generate a forcing field from current data
@@ -602,7 +722,7 @@ contains
       ! Linear interpolation between an 'old' and 'new' monthly random fields.
       call get_linear_coeff(sf_hf_time, pold, pnew)
 
-      ! Conversion: stoch data from EOFs in K to flux.
+      ! Stoch data from EOFs in K
       do iblock = 1, nblocks_clinic
         STF_stoch(:,:,1,iblock) =  (pold * stoch_data_t2m(:,:,iblock,2) + &
                                     pnew * stoch_data_t2m(:,:,iblock,1))
