@@ -124,6 +124,10 @@
       diag_outfile,                  &! current  filename for diagnostic output
       diag_transport_outfile
 
+   character (char_len), public ::   &
+      diag_outfile_omuse = "unknown",            &! current  filename for diagnostic output
+      diag_transport_outfile_omuse = "unknown"
+
 !-----------------------------------------------------------------------
 !
 !  variables specific to ccsm coupled code
@@ -371,6 +375,14 @@
    call broadcast_scalar(nml_error, master_task)
    if (nml_error /= 0) then
       call exit_POP(sigAbort,'ERROR reading diagnostics_nml')
+   endif
+
+   if (diag_outfile_omuse /= "unknown") then
+     diag_outfile = diag_outfile_omuse
+   endif
+
+   if (diag_transport_outfile_omuse /= "unknown") then
+     diag_transport_outfile = diag_transport_outfile_omuse
    endif
 
 !-----------------------------------------------------------------------
